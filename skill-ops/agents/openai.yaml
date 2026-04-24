@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill Ops"
+  short_description: "Audit and improve task skills with traces and noisy labels."
+  default_prompt: "Use $skill-ops to audit a work skill against rules, labels, and trace data, then improve consistency and flag likely label errors."
