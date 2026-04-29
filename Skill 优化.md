@@ -55,3 +55,6 @@
 3、对工作skill增加trace监控，并对trace数据进行分析，充分利用从trace数据中萃取出的知识和信息来优化工作skill；
 
 4、做本项目前进行充分调研，洞察业界是否有解决类似问题的论文、技术报告或者项目。先写一份洞察报告，再参考业界做法完成本项目；
+
+<img width="3840" height="2160" alt="trace_diagnosis_skill_loop_cn_fixed_2x" src="https://github.com/user-attachments/assets/b710c5b6-7997-4190-a35b-06c586e95d67" />
+
