@@ -152,14 +152,19 @@ def main() -> int:
         print("No JSON files found.")
         return 0
 
+    good, bad = 0, 0
     for json_file in json_files:
         try:
             trace = load_json(json_file)
             label = classify_trace(trace, repeat_threshold)
+            if label == GOOD_LABEL:
+                good += 1
+            else:
+                bad += 1
             print(f"{json_file.name}\t{label}")
         except Exception as exc:
             print(f"{json_file.name}\t{BAD_LABEL}\tload_error={exc}")
-
+    print(f"Good {good} / Bad {bad}")
     return 0
 
 

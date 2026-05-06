@@ -47,42 +47,40 @@ def split_json_files(input_dir, train_size=0.8, output_train='train_set.jsonl', 
     output_train: 训练集 jsonl 输出路径
     output_test: 测试集 jsonl 输出路径
     """
-    try:
-        input_path = Path(input_dir)
-        json_files = sorted(input_path.glob('*.json'))
+    input_path = Path(input_dir)
+    json_files = sorted(input_path.glob('*.json'))
 
-        if not json_files:
-            raise ValueError(f'未在目录中找到 json 文件: {input_dir}')
+    if not json_files:
+        raise ValueError(f'未在目录中找到 json 文件: {input_dir}')
 
-        samples = []
-        for json_file in json_files:
-            with json_file.open('r', encoding='utf-8') as f:
-                sample = json.load(f)
-                sample['sample_name'] = json_file.name
-                samples.append(sample)
+    samples = []
+    for json_file in json_files:
+        with json_file.open('r', encoding='utf-8') as f:
+            sample = json.load(f)
+            sample['sample_name'] = json_file.name
+            sample['source'] = "策划报告-BadCase"
+            samples.append(sample)
 
-        train_samples, test_samples = train_test_split(
-            samples,
-            train_size=train_size,
-            random_state=42,
-            shuffle=True
-        )
+    train_samples, test_samples = train_test_split(
+        samples,
+        train_size=train_size,
+        random_state=42,
+        shuffle=True
+    )
 
-        with open(output_train, 'w', encoding='utf-8') as f:
-            for sample in train_samples:
-                f.write(json.dumps(sample, ensure_ascii=False) + '\n')
+    with open(output_train, 'w', encoding='utf-8') as f:
+        for sample in train_samples:
+            f.write(json.dumps(sample, ensure_ascii=False) + '\n')
 
-        with open(output_test, 'w', encoding='utf-8') as f:
-            for sample in test_samples:
-                f.write(json.dumps(sample, ensure_ascii=False) + '\n')
+    with open(output_test, 'w', encoding='utf-8') as f:
+        for sample in test_samples:
+            f.write(json.dumps(sample, ensure_ascii=False) + '\n')
 
-        print(f"成功读取目录：{input_dir}，总样本数：{len(samples)}")
-        print("处理完成")
-        print(f"训练集已保存至：{output_train} (样本数: {len(train_samples)})")
-        print(f"测试集已保存至：{output_test} (样本数: {len(test_samples)})")
+    print(f"成功读取目录：{input_dir}，总样本数：{len(samples)}")
+    print("处理完成")
+    print(f"训练集已保存至：{output_train} (样本数: {len(train_samples)})")
+    print(f"测试集已保存至：{output_test} (样本数: {len(test_samples)})")
 
-    except Exception as e:
-        print(f"发生错误: {e}")
 
 
 def compute_accuracy(input_file):
@@ -101,4 +99,6 @@ def compute_accuracy(input_file):
 
 if __name__ == "__main__":
     # split_excel_samples(input_file='data.xlsx', train_size=0.5)
-    compute_accuracy(input_file='./shortage_analyze/data.xlsx')
+    # compute_accuracy(input_file='./shortage_analyze/data.xlsx')
+
+    split_json_files(r'D:\Data\agent\trace\一句话BadCase', train_size=0.2, output_train='train_set.jsonl')
