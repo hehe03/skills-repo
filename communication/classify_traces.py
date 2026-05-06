@@ -19,6 +19,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Search JSON files recursively.",
     )
+    parser.add_argument(
+        "--repeat-threshold",
+        type=int,
+        default=2,
+        help="Mark as bad case when a consecutive repeated task or loop appears this many times. Default: 2.",
+    )
     return parser.parse_args()
 
 
@@ -51,9 +57,54 @@ def is_normal_result(result: Any) -> bool:
     return True
 
 
-def classify_trace(trace: dict[str, Any]) -> str:
+def build_task_signature(task: dict[str, Any]) -> str:
+    task_name = str(task.get("task_name", "")).strip()
+    command = task.get("command")
+    command_name = ""
+
+    if isinstance(command, dict):
+        command_name = str(command.get("name", "")).strip()
+
+    return f"{task_name}||{command_name}"
+
+
+def has_repeated_or_loop_tasks(plan_list: list[Any], repeat_threshold: int) -> bool:
+    if repeat_threshold <= 1:
+        return len(plan_list) > 0
+
+    signatures = [
+        build_task_signature(task)
+        for task in plan_list
+        if isinstance(task, dict)
+    ]
+
+    total = len(signatures)
+    if total < repeat_threshold:
+        return False
+
+    for window_size in range(1, total // repeat_threshold + 1):
+        span = window_size * repeat_threshold
+        for start in range(0, total - span + 1):
+            pattern = signatures[start : start + window_size]
+            if not pattern:
+                continue
+
+            if all(
+                signatures[start + offset * window_size : start + (offset + 1) * window_size]
+                == pattern
+                for offset in range(1, repeat_threshold)
+            ):
+                return True
+
+    return False
+
+
+def classify_trace(trace: dict[str, Any], repeat_threshold: int) -> str:
     plan_list = trace.get("plan_list")
     if not isinstance(plan_list, list):
+        return BAD_LABEL
+
+    if has_repeated_or_loop_tasks(plan_list, repeat_threshold):
         return BAD_LABEL
 
     for task in plan_list:
@@ -82,6 +133,11 @@ def iter_json_files(input_dir: Path, recursive: bool) -> list[Path]:
 def main() -> int:
     args = parse_args()
     input_dir = Path(args.input_dir)
+    repeat_threshold = args.repeat_threshold
+
+    if repeat_threshold < 2:
+        print("--repeat-threshold must be greater than or equal to 2.")
+        return 1
 
     if not input_dir.exists():
         print(f"Input directory does not exist: {input_dir}")
@@ -99,7 +155,7 @@ def main() -> int:
     for json_file in json_files:
         try:
             trace = load_json(json_file)
-            label = classify_trace(trace)
+            label = classify_trace(trace, repeat_threshold)
             print(f"{json_file.name}\t{label}")
         except Exception as exc:
             print(f"{json_file.name}\t{BAD_LABEL}\tload_error={exc}")
