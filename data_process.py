@@ -57,7 +57,9 @@ def split_json_files(input_dir, train_size=0.8, output_train='train_set.jsonl', 
         samples = []
         for json_file in json_files:
             with json_file.open('r', encoding='utf-8') as f:
-                samples.append(json.load(f))
+                sample = json.load(f)
+                sample['sample_name'] = json_file.name
+                samples.append(sample)
 
         train_samples, test_samples = train_test_split(
             samples,

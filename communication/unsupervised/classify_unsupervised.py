@@ -320,7 +320,7 @@ def append_jsonl_samples(
             if not line.strip():
                 continue
 
-            sample_name = (
+            fallback_name = (
                 str(line_number)
                 if sample_prefix is None
                 else f"{sample_prefix}:{line_number}"
@@ -329,9 +329,10 @@ def append_jsonl_samples(
                 data = json.loads(line)
                 if not isinstance(data, dict):
                     raise ValueError("trace JSONL line root must be an object")
+                sample_name = normalize_text(data.get("sample_name")) or fallback_name
                 samples.append(TraceSample(sample_name, data))
             except Exception as exc:
-                error_rows.append(make_error_row(sample_name, str(exc)))
+                error_rows.append(make_error_row(fallback_name, str(exc)))
 
 
 def load_trace_samples(input_path: Path, recursive: bool) -> tuple[list[TraceSample], list[dict[str, Any]]]:
