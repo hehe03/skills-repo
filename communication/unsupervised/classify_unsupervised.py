@@ -61,7 +61,38 @@ def parse_args() -> argparse.Namespace:
         "--output",
         help="Optional TSV output path. Uses utf-8-sig for Windows Excel.",
     )
+    parser.add_argument(
+        "--fields",
+        help="Comma-separated top-level trace fields used for classification, for example: query,plan_list. Default: all fields.",
+    )
     return parser.parse_args()
+
+
+def parse_field_names(fields: str | None) -> list[str] | None:
+    if fields is None:
+        return None
+
+    field_names = [field.strip() for field in fields.split(",") if field.strip()]
+    if not field_names:
+        raise ValueError("--fields must contain at least one top-level field name.")
+
+    invalid_fields = [
+        field
+        for field in field_names
+        if "." in field or "[" in field or "]" in field
+    ]
+    if invalid_fields:
+        raise ValueError(
+            "--fields only supports top-level fields: " + ", ".join(invalid_fields)
+        )
+
+    return field_names
+
+
+def filter_trace_fields(trace: dict[str, Any], field_names: list[str] | None) -> dict[str, Any]:
+    if field_names is None:
+        return trace
+    return {field_name: trace[field_name] for field_name in field_names if field_name in trace}
 
 
 def normalize_text(value: Any) -> str:
@@ -382,6 +413,12 @@ def write_rows(rows: list[dict[str, Any]], output: str | None) -> None:
 
 def main() -> int:
     args = parse_args()
+    try:
+        field_names = parse_field_names(args.fields)
+    except ValueError as exc:
+        print(exc)
+        return 1
+
     input_path = Path(args.input_path)
     if not input_path.exists():
         print(f"Input path does not exist: {input_path}")
@@ -395,7 +432,8 @@ def main() -> int:
     items: list[tuple[str, dict[str, float], dict[str, Any]]] = []
     for sample in samples:
         try:
-            features, summary = extract_features(sample.trace)
+            trace = filter_trace_fields(sample.trace, field_names)
+            features, summary = extract_features(trace)
             items.append((sample.name, features, summary))
         except Exception as exc:
             rows.append(make_error_row(sample.name, str(exc)))
