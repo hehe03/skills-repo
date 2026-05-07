@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from communication.aigc import UniAIGC
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -61,13 +62,16 @@ class IterationLog:
 def llm_student_generate(query: str) -> str:
     # TODO: Fill in your student-model LLM call here.
     # Input is the complete query. Output is the raw model result.
-    return ""
+    llm = UniAIGC()
+    res = llm.client_qwen3_32b(query)
+    return res
 
 
 def llm_teacher_generate(query: str) -> str:
     # TODO: Fill in your teacher-model LLM call here.
-    # Input is the complete query. Output is the raw model result.
-    return ""
+    llm = UniAIGC()
+    res = llm.client_qwen72b(query)
+    return res
 
 
 def parse_args(argv: list[Any] | None = None) -> argparse.Namespace:
@@ -613,4 +617,5 @@ if __name__ == "__main__":
     # Example:
     # INLINE_ARGS = [r".\traces", r".\metadata.csv", "--batch", 4, "--epoch", 2]
     INLINE_ARGS: list[Any] | None = None
+    INLINE_ARGS = [r"D:\Data\agent\trace\all", r"..\..\高交all.csv", "--batch", 2, "--epoch", 2]
     raise SystemExit(main(INLINE_ARGS))

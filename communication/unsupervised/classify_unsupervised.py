@@ -480,4 +480,5 @@ if __name__ == "__main__":
     # Example:
     # INLINE_ARGS = [r".\traces", r".\metadata.csv", "--split", "test"]
     INLINE_ARGS: list[str] | None = None
+    INLINE_ARGS = [r"D:\Data\agent\trace\all", r"..\..\高交all.csv"]
     raise SystemExit(main(INLINE_ARGS))

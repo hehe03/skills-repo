@@ -3,6 +3,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from aigc import UniAIGC
 
 from trace_eval_utils import (
     BAD_LABEL,
@@ -36,7 +37,9 @@ DEFAULT_PROMPT = """你是一个 Agent trace 质量评估器。
 
 def llm_generate(query: str) -> str:
     # TODO: Fill in your LLM call here. Input is the complete query, output is the raw model result.
-    return ""
+    llm = UniAIGC()
+    res = llm.client_qwen3_32b(query)
+    return res
 
 
 def parse_args(argv: list[Any] | None = None) -> argparse.Namespace:
@@ -286,4 +289,5 @@ if __name__ == "__main__":
     # Example:
     # INLINE_ARGS = [r".\traces", r".\metadata.csv", "--split", "test", "--batch", 1]
     INLINE_ARGS: list[Any] | None = None
+    INLINE_ARGS = [r"D:\Data\agent\trace\all", r"..\高交all.csv", "--split", 'test']
     raise SystemExit(main(INLINE_ARGS))

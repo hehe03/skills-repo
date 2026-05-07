@@ -3,6 +3,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from aigc import UniAIGC
 
 from trace_eval_utils import (
     BAD_LABEL,
@@ -55,8 +56,10 @@ HYBRID_AGENT_PROMPT = """你是一个严格的 Agent trace 审查员。你的任
 
 
 def llm_agent_generate(query: str) -> str:
-    # TODO: Fill in your Agent LLM call here. Input is the complete query, output is raw model result.
-    return ""
+    # Fill in your Agent LLM call here. Input is the complete query, output is raw model result.
+    llm = UniAIGC()
+    res = llm.client_qwen3_32b(query)
+    return res
 
 
 def parse_args(argv: list[Any] | None = None) -> argparse.Namespace:
@@ -329,5 +332,7 @@ if __name__ == "__main__":
     # Set INLINE_ARGS to run from an editor without command-line arguments.
     # Example:
     # INLINE_ARGS = [r".\traces", r".\metadata.csv", "--split", "test", "--batch", 1]
-    INLINE_ARGS: list[Any] | None = None
+    # INLINE_ARGS: list[Any] | None = None
+
+    INLINE_ARGS = [r"D:\Data\agent\trace\all", r"..\高交all.csv", "--split", 'test']
     raise SystemExit(main(INLINE_ARGS))
