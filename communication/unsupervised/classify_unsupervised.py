@@ -48,7 +48,7 @@ FEATURE_NAMES = [
 ]
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Unsupervised trace classifier for good case / bad case."
     )
@@ -99,7 +99,7 @@ def parse_args() -> argparse.Namespace:
         default="unsupervised_metrics.md",
         help="Markdown metrics output path. Default: unsupervised_metrics.md.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def parse_field_names(fields: str | None) -> list[str] | None:
@@ -410,8 +410,8 @@ def build_reason(summary: dict[str, Any]) -> str:
     return "；".join(reasons)
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     try:
         field_names = parse_field_names(args.fields)
     except ValueError as exc:
@@ -476,4 +476,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Set INLINE_ARGS to run from an editor without command-line arguments.
+    # Example:
+    # INLINE_ARGS = [r".\traces", r".\metadata.csv", "--split", "test"]
+    INLINE_ARGS: list[str] | None = None
+    raise SystemExit(main(INLINE_ARGS))
