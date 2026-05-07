@@ -16,6 +16,7 @@ from trace_eval_utils import (
     write_metrics_markdown,
     write_predictions_tsv,
 )
+from classify_traces import classify_trace
 
 
 HYBRID_AGENT_PROMPT = """你是一个严格的 Agent trace 审查员。你的任务是审查未被结构规则拦截的 trace 是否真正完成了用户请求。
@@ -76,12 +77,12 @@ def parse_args(argv: list[Any] | None = None) -> argparse.Namespace:
         "--repeat-threshold",
         type=int,
         default=2,
-        help="Hard-rule threshold for consecutive repeated/loop tasks. Default: 2.",
+        help="Repeat/loop threshold passed to the rule baseline. Default: 2.",
     )
     parser.add_argument(
         "--disable-hard-rule",
         action="store_true",
-        help="Disable repeated/loop hard rule and send every sample to Agent LLM.",
+        help="Disable the full rule baseline and send every sample to Agent LLM.",
     )
     parser.add_argument(
         "--batch",
@@ -109,57 +110,6 @@ def load_prompt(prompt_file: str | None) -> str:
     if not prompt_file:
         return HYBRID_AGENT_PROMPT
     return Path(prompt_file).read_text(encoding="utf-8-sig")
-
-
-def normalize_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
-
-
-def task_signature(task: dict[str, Any]) -> str:
-    task_name = normalize_text(task.get("task_name"))
-    command = task.get("command")
-    command_name = ""
-    command_args = ""
-    if isinstance(command, dict):
-        command_name = normalize_text(command.get("name"))
-        command_args = normalize_text(command.get("args"))
-    return f"{task_name}||{command_name}||{command_args}"
-
-
-def detect_repeated_or_loop_tasks(trace: dict[str, Any], repeat_threshold: int) -> tuple[bool, str]:
-    plan_list = trace.get("plan_list")
-    if not isinstance(plan_list, list) or repeat_threshold < 2:
-        return False, ""
-
-    signatures = [
-        task_signature(task)
-        for task in plan_list
-        if isinstance(task, dict)
-    ]
-    total = len(signatures)
-    if total < repeat_threshold:
-        return False, ""
-
-    for index in range(0, total - repeat_threshold + 1):
-        window = signatures[index : index + repeat_threshold]
-        if len(set(window)) == 1:
-            return True, f"连续重复任务：位置 {index + 1}-{index + repeat_threshold}"
-
-    for window_size in range(1, total // repeat_threshold + 1):
-        span = window_size * repeat_threshold
-        for start in range(0, total - span + 1):
-            pattern = signatures[start : start + window_size]
-            if all(
-                signatures[start + offset * window_size : start + (offset + 1) * window_size] == pattern
-                for offset in range(1, repeat_threshold)
-            ):
-                return True, f"连续循环任务：pattern长度={window_size}，重复次数={repeat_threshold}"
-
-    return False, ""
 
 
 def normalize_agent_label(value: Any) -> str | None:
@@ -273,7 +223,7 @@ def build_agent_query(prompt: str, batch_records: list[Any]) -> str:
     ]
     return (
         prompt.rstrip()
-        + "\n\n以下样本未命中前置循环/重复 hard rule，请做语义和质量审查：\n"
+        + "\n\n以下样本已被完整规则基线判断为 goodcase，请继续做语义和质量审查：\n"
         + json.dumps(samples[0] if len(samples) == 1 else samples, ensure_ascii=False, indent=2)
     )
 
@@ -307,12 +257,11 @@ def main(argv: list[Any] | None = None) -> int:
     agent_records: list[Any] = []
 
     for record in records:
-        rule_hit = False
-        rule_reason = ""
+        rule_predicted_label = GOOD_LABEL
         if not args.disable_hard_rule:
-            rule_hit, rule_reason = detect_repeated_or_loop_tasks(record.trace, args.repeat_threshold)
+            rule_predicted_label = classify_trace(record.trace, args.repeat_threshold)
 
-        if rule_hit:
+        if rule_predicted_label == BAD_LABEL:
             predictions.append(
                 Prediction(
                     name=record.meta.name,
@@ -321,9 +270,9 @@ def main(argv: list[Any] | None = None) -> int:
                     actual_label=record.meta.label,
                     predicted_label=BAD_LABEL,
                     detail={
-                        "stage": "hard_rule",
-                        "badcase_type": "repetition_or_loop",
-                        "evidence": rule_reason,
+                        "stage": "rule_baseline",
+                        "badcase_type": "rule_baseline",
+                        "evidence": f"classify_traces.py predicted {BAD_LABEL}",
                         "confidence": "1.0",
                         "raw_result": "",
                     },
@@ -333,7 +282,7 @@ def main(argv: list[Any] | None = None) -> int:
             agent_records.append(record)
 
     print(
-        f"[hybrid] hard-rule badcase={len(predictions)}, agent-review={len(agent_records)}, total={len(records)}",
+        f"[hybrid] rule-baseline badcase={len(predictions)}, agent-review={len(agent_records)}, total={len(records)}",
         flush=True,
     )
 
