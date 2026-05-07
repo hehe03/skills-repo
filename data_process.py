@@ -1,6 +1,7 @@
 import json
+import random
 from pathlib import Path
-
+import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
@@ -58,7 +59,6 @@ def split_json_files(input_dir, train_size=0.8, output_train='train_set.jsonl', 
         with json_file.open('r', encoding='utf-8') as f:
             sample = json.load(f)
             sample['sample_name'] = json_file.name
-            sample['source'] = "策划报告-BadCase"
             samples.append(sample)
 
     train_samples, test_samples = train_test_split(
@@ -82,6 +82,29 @@ def split_json_files(input_dir, train_size=0.8, output_train='train_set.jsonl', 
     print(f"测试集已保存至：{output_test} (样本数: {len(test_samples)})")
 
 
+def meta_data_csv(input_dir, label, source, output):
+    """读取路径的json文件，为每一个文件创建元数据：类别，来源，名称"""
+    input_path = Path(input_dir)
+    json_files = sorted(input_path.glob('*.json'))
+
+    if not json_files:
+        raise ValueError(f'未在目录中找到 json 文件: {input_dir}')
+
+    samples = []
+    for json_file in json_files:
+        samples.append({"name": json_file.name, "label": label, "source": source})
+
+    df = pd.DataFrame(samples)
+    np.random.seed(1)
+    num_rows = len(samples)
+    num_train = int(0.2 * num_rows)
+
+    split = ['train'] * num_train + ['test'] * (num_rows - num_train)
+    random.shuffle(split)
+    df['split'] = split
+    print(df['split'].value_counts(normalize=True))
+    df.to_csv(output, index=False, encoding='utf-8-sig')
+
 
 def compute_accuracy(input_file):
     df = pd.read_excel(input_file)
@@ -101,4 +124,5 @@ if __name__ == "__main__":
     # split_excel_samples(input_file='data.xlsx', train_size=0.5)
     # compute_accuracy(input_file='./shortage_analyze/data.xlsx')
 
-    split_json_files(r'D:\Data\agent\trace\一句话BadCase', train_size=0.2, output_train='train_set.jsonl')
+    # split_json_files(r'D:\Data\agent\trace\一句话BadCase', train_size=0.2)
+    meta_data_csv(r'D:\Data\agent\trace\一句话BadCase', label='BadCase', source='一句话', output='一句话1.csv')
