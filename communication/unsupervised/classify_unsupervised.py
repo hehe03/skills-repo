@@ -3,14 +3,26 @@ import csv
 import json
 import math
 import re
+import sys
 import statistics
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-GOOD_LABEL = "good case"
-BAD_LABEL = "bad case"
+from trace_eval_utils import (  # noqa: E402
+    BAD_LABEL,
+    GOOD_LABEL,
+    Prediction,
+    filter_metadata_by_split,
+    load_metadata,
+    load_trace_records,
+    print_metrics_summary,
+    print_predictions,
+    write_metrics_markdown,
+    write_predictions_tsv,
+)
+
 OUTLINE_TASK_KEYWORD = "生成大纲"
 
 FEATURE_NAMES = [
@@ -29,27 +41,26 @@ FEATURE_NAMES = [
     "query_task_overlap",
     "task_entropy",
     "command_entropy",
+    "unique_result_ratio",
+    "max_same_result_run",
+    "final_result_nonempty",
+    "result_entropy",
 ]
-
-
-@dataclass(frozen=True)
-class TraceSample:
-    name: str
-    trace: dict[str, Any]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Unsupervised trace classifier for good case / bad case."
     )
+    parser.add_argument("input_dir", help="Directory that contains trace JSON files.")
     parser.add_argument(
-        "input_path",
-        help="JSON/JSONL file or directory that contains trace files.",
+        "metadata_csv",
+        help="Metadata CSV with columns: name,label,source,split.",
     )
     parser.add_argument(
-        "--recursive",
-        action="store_true",
-        help="Search JSON files recursively.",
+        "--split",
+        choices=["train", "test"],
+        help="Use only this split as evaluation set. Default: all samples.",
     )
     parser.add_argument(
         "--threshold",
@@ -59,11 +70,34 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        help="Optional TSV output path. Uses utf-8-sig for Windows Excel.",
+        help="Optional TSV file for per-sample predictions.",
     )
     parser.add_argument(
         "--fields",
         help="Comma-separated top-level trace fields used for classification, for example: query,plan_list. Default: all fields.",
+    )
+    parser.add_argument(
+        "--bad-risk-threshold",
+        type=float,
+        default=0.55,
+        help="Mark as bad case when bad-risk score reaches this threshold. Default: 0.55.",
+    )
+    parser.add_argument(
+        "--bad-risk-weight",
+        type=float,
+        default=0.45,
+        help="Penalty weight applied to bad-risk score in final score. Default: 0.45.",
+    )
+    parser.add_argument(
+        "--centrality-weight",
+        type=float,
+        default=0.10,
+        help="Weight for batch centrality adjustment. Default: 0.10.",
+    )
+    parser.add_argument(
+        "--metrics-output",
+        default="unsupervised_metrics.md",
+        help="Markdown metrics output path. Default: unsupervised_metrics.md.",
     )
     return parser.parse_args()
 
@@ -149,6 +183,10 @@ def longest_same_run(signatures: list[str]) -> int:
     return longest
 
 
+def clamp(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
+    return max(minimum, min(maximum, value))
+
+
 def max_loop_repeats(signatures: list[str]) -> int:
     total = len(signatures)
     best = 1 if total else 0
@@ -189,6 +227,7 @@ def extract_features(trace: dict[str, Any]) -> tuple[dict[str, float], dict[str,
     signatures = [task_signature(task) for task in tasks]
     unique_task_count = len(set(task_names))
     unique_command_count = len(set(command_names))
+    unique_result_count = len(set(result_texts))
     nonempty_results = sum(1 for result_text in result_texts if result_text.strip())
     outline_count = sum(1 for task_name in task_names if OUTLINE_TASK_KEYWORD in task_name)
 
@@ -218,6 +257,10 @@ def extract_features(trace: dict[str, Any]) -> tuple[dict[str, float], dict[str,
         "query_task_overlap": overlap,
         "task_entropy": entropy(task_names),
         "command_entropy": entropy(command_names),
+        "unique_result_ratio": unique_result_count / step_count if step_count else 0.0,
+        "max_same_result_run": float(longest_same_run(result_texts)),
+        "final_result_nonempty": 1.0 if result_texts and result_texts[-1].strip() else 0.0,
+        "result_entropy": entropy(result_texts),
     }
 
     summary = {
@@ -225,7 +268,13 @@ def extract_features(trace: dict[str, Any]) -> tuple[dict[str, float], dict[str,
         "outline_count": outline_count,
         "max_same_run": int(features["max_same_run"]),
         "max_loop_repeats": int(features["max_loop_repeats"]),
+        "max_same_result_run": int(features["max_same_result_run"]),
         "result_nonempty_ratio": features["result_nonempty_ratio"],
+        "unique_task_ratio": features["unique_task_ratio"],
+        "unique_result_ratio": features["unique_result_ratio"],
+        "missing_command_ratio": features["missing_command_ratio"],
+        "final_result_length": result_lengths[-1] if result_lengths else 0,
+        "final_result_nonempty": bool(features["final_result_nonempty"]),
     }
     return features, summary
 
@@ -252,6 +301,33 @@ def behavior_prior(features: dict[str, float]) -> float:
     raw -= 0.55 * features["missing_command_ratio"]
     raw -= 0.35 * min(length_penalty, 1.0)
     raw -= 1.35
+    return sigmoid(raw)
+
+
+def bad_risk_score(features: dict[str, float]) -> float:
+    repeat_penalty = clamp((features["max_same_run"] - 1.0) / 2.0)
+    loop_penalty = clamp((features["max_loop_repeats"] - 1.0) / 2.0)
+    same_result_penalty = clamp((features["max_same_result_run"] - 1.0) / 2.0)
+    low_final_result = 1.0 - clamp(features["final_result_log"] / math.log1p(80))
+    low_avg_result = 1.0 - clamp(features["avg_result_log"] / math.log1p(60))
+    low_task_diversity = 1.0 - features["unique_task_ratio"]
+    low_result_diversity = 1.0 - features["unique_result_ratio"]
+    no_outline = 1.0 - features["has_outline"]
+
+    raw = 0.0
+    raw += 1.50 * loop_penalty
+    raw += 1.25 * repeat_penalty
+    raw += 1.00 * same_result_penalty
+    raw += 0.90 * (1.0 - features["result_nonempty_ratio"])
+    raw += 0.75 * low_final_result
+    raw += 0.50 * low_avg_result
+    raw += 0.65 * low_task_diversity
+    raw += 0.45 * low_result_diversity
+    raw += 0.55 * features["revisit_ratio"]
+    raw += 0.55 * features["missing_command_ratio"]
+    raw += 0.55 * no_outline
+    raw -= 0.35 * features["query_task_overlap"]
+    raw -= 1.65
     return sigmoid(raw)
 
 
@@ -315,100 +391,23 @@ def build_reason(summary: dict[str, Any]) -> str:
     return "；".join(reasons)
 
 
-def load_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8-sig") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError("trace JSON root must be an object")
-    return data
-
-
-def iter_trace_files(input_dir: Path, recursive: bool) -> list[Path]:
-    json_pattern = "**/*.json" if recursive else "*.json"
-    jsonl_pattern = "**/*.jsonl" if recursive else "*.jsonl"
-    return sorted([*input_dir.glob(json_pattern), *input_dir.glob(jsonl_pattern)])
-
-
-def make_error_row(sample_name: str, message: str) -> dict[str, Any]:
-    return {
-        "file": sample_name,
-        "label": BAD_LABEL,
-        "score": "0.000",
-        "behavior_prior": "0.000",
-        "centrality": "0.000",
-        "reason": f"load_error={message}",
-    }
-
-
-def append_jsonl_samples(
-    path: Path,
-    sample_prefix: str | None,
-    samples: list[TraceSample],
-    error_rows: list[dict[str, Any]],
-) -> None:
-    with path.open("r", encoding="utf-8-sig") as file:
-        for line_number, line in enumerate(file, start=1):
-            if not line.strip():
-                continue
-
-            fallback_name = (
-                str(line_number)
-                if sample_prefix is None
-                else f"{sample_prefix}:{line_number}"
-            )
-            try:
-                data = json.loads(line)
-                if not isinstance(data, dict):
-                    raise ValueError("trace JSONL line root must be an object")
-                sample_name = normalize_text(data.get("sample_name")) or fallback_name
-                samples.append(TraceSample(sample_name, data))
-            except Exception as exc:
-                error_rows.append(make_error_row(fallback_name, str(exc)))
-
-
-def load_trace_samples(input_path: Path, recursive: bool) -> tuple[list[TraceSample], list[dict[str, Any]]]:
-    samples: list[TraceSample] = []
-    error_rows: list[dict[str, Any]] = []
-
-    if input_path.is_file():
-        suffix = input_path.suffix.lower()
-        if suffix == ".json":
-            try:
-                samples.append(TraceSample(input_path.name, load_json(input_path)))
-            except Exception as exc:
-                error_rows.append(make_error_row(input_path.name, str(exc)))
-        elif suffix == ".jsonl":
-            append_jsonl_samples(input_path, None, samples, error_rows)
-        else:
-            error_rows.append(make_error_row(input_path.name, "input file must be .json or .jsonl"))
-        return samples, error_rows
-
-    for trace_file in iter_trace_files(input_path, recursive):
-        sample_prefix = trace_file.relative_to(input_path).as_posix()
-        suffix = trace_file.suffix.lower()
-        if suffix == ".json":
-            try:
-                samples.append(TraceSample(sample_prefix, load_json(trace_file)))
-            except Exception as exc:
-                error_rows.append(make_error_row(sample_prefix, str(exc)))
-        elif suffix == ".jsonl":
-            append_jsonl_samples(trace_file, sample_prefix, samples, error_rows)
-
-    return samples, error_rows
-
-
-def write_rows(rows: list[dict[str, Any]], output: str | None) -> None:
-    fieldnames = ["file", "label", "score", "behavior_prior", "centrality", "reason"]
-    if output:
-        with Path(output).open("w", newline="", encoding="utf-8-sig") as file:
-            writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter="\t")
-            writer.writeheader()
-            writer.writerows(rows)
-        return
-
-    print("\t".join(fieldnames))
-    for row in rows:
-        print("\t".join(str(row[name]) for name in fieldnames))
+def build_reason(summary: dict[str, Any]) -> str:
+    reasons: list[str] = []
+    if summary["max_loop_repeats"] >= 2:
+        reasons.append(f"连续循环次数={summary['max_loop_repeats']}")
+    if summary["max_same_run"] >= 2:
+        reasons.append(f"连续重复次数={summary['max_same_run']}")
+    if summary["max_same_result_run"] >= 2:
+        reasons.append(f"连续重复结果次数={summary['max_same_result_run']}")
+    if summary["outline_count"]:
+        reasons.append(f"生成大纲任务数={summary['outline_count']}")
+    if summary["missing_command_ratio"] > 0:
+        reasons.append(f"缺失command比例={summary['missing_command_ratio']:.2f}")
+    reasons.append(f"result非空比例={summary['result_nonempty_ratio']:.2f}")
+    reasons.append(f"结果多样性={summary['unique_result_ratio']:.2f}")
+    reasons.append(f"最终结果长度={summary['final_result_length']}")
+    reasons.append(f"任务数={summary['step_count']}")
+    return "；".join(reasons)
 
 
 def main() -> int:
@@ -419,43 +418,60 @@ def main() -> int:
         print(exc)
         return 1
 
-    input_path = Path(args.input_path)
-    if not input_path.exists():
-        print(f"Input path does not exist: {input_path}")
+    input_dir = Path(args.input_dir)
+    metadata_csv = Path(args.metadata_csv)
+    if not input_dir.is_dir():
+        print(f"Input path is not a directory: {input_dir}")
         return 1
 
-    samples, rows = load_trace_samples(input_path, args.recursive)
-    if not samples and not rows:
-        print("No JSON/JSONL samples found.")
+    if not metadata_csv.is_file():
+        print(f"Metadata CSV does not exist: {metadata_csv}")
+        return 1
+
+    metadata = filter_metadata_by_split(load_metadata(metadata_csv), args.split)
+    if not metadata:
+        print("No metadata rows selected.")
         return 0
 
+    records = load_trace_records(input_dir, metadata)
     items: list[tuple[str, dict[str, float], dict[str, Any]]] = []
-    for sample in samples:
-        try:
-            trace = filter_trace_fields(sample.trace, field_names)
-            features, summary = extract_features(trace)
-            items.append((sample.name, features, summary))
-        except Exception as exc:
-            rows.append(make_error_row(sample.name, str(exc)))
+    for record in records:
+        trace = filter_trace_fields(record.trace, field_names)
+        features, summary = extract_features(trace)
+        items.append((record.meta.name, features, summary))
 
     centralities = centrality_scores([features for _, features, _ in items])
     use_centrality = len(items) >= 3
+    predictions: list[Prediction] = []
     for (sample_name, features, summary), centrality in zip(items, centralities):
         prior = behavior_prior(features)
-        score = 0.75 * prior + 0.25 * centrality if use_centrality else prior
-        label = GOOD_LABEL if score >= args.threshold else BAD_LABEL
-        rows.append(
-            {
-                "file": sample_name,
-                "label": label,
-                "score": f"{score:.3f}",
-                "behavior_prior": f"{prior:.3f}",
-                "centrality": f"{centrality:.3f}" if use_centrality else "N/A",
-                "reason": build_reason(summary),
-            }
+        risk = bad_risk_score(features)
+        centrality_adjustment = args.centrality_weight * (centrality - 0.5) if use_centrality else 0.0
+        score = clamp(prior + centrality_adjustment - args.bad_risk_weight * risk)
+        predicted_label = BAD_LABEL if risk >= args.bad_risk_threshold else GOOD_LABEL if score >= args.threshold else BAD_LABEL
+        meta = next(record.meta for record in records if record.meta.name == sample_name)
+        predictions.append(
+            Prediction(
+                name=sample_name,
+                source=meta.source,
+                split=meta.split,
+                actual_label=meta.label,
+                predicted_label=predicted_label,
+                detail={
+                    "score": f"{score:.3f}",
+                    "behavior_prior": f"{prior:.3f}",
+                    "bad_risk": f"{risk:.3f}",
+                    "centrality": f"{centrality:.3f}" if use_centrality else "N/A",
+                    "reason": build_reason(summary),
+                },
+            )
         )
 
-    write_rows(rows, args.output)
+    print_predictions(predictions)
+    print_metrics_summary(predictions)
+    if args.output:
+        write_predictions_tsv(predictions, Path(args.output))
+    write_metrics_markdown(predictions, Path(args.metrics_output), "Unsupervised Trace Classification")
     return 0
 
 
