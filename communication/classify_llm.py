@@ -198,6 +198,16 @@ def chunks(items: list[Any], size: int) -> list[list[Any]]:
     return [items[index : index + size] for index in range(0, len(items), size)]
 
 
+def print_progress(batch_index: int, batch_records: list[Any], total: int) -> None:
+    if total <= 1:
+        return
+
+    start = batch_index + 1
+    end = batch_index + len(batch_records)
+    names = ", ".join(record.meta.name for record in batch_records)
+    print(f"[progress] processing {start}-{end}/{total}: {names}", flush=True)
+
+
 def build_query(prompt: str, batch_records: list[Any]) -> str:
     samples = [
         {
@@ -239,7 +249,9 @@ def main(argv: list[Any] | None = None) -> int:
     records = load_trace_records(input_dir, metadata)
     predictions: list[Prediction] = []
 
-    for batch_records in chunks(records, args.batch):
+    for batch_start, batch_records in enumerate(chunks(records, args.batch), start=0):
+        batch_index = batch_start * args.batch
+        print_progress(batch_index, batch_records, len(records))
         sample_names = [record.meta.name for record in batch_records]
         query = build_query(prompt, batch_records)
         raw_result = llm_generate(query)
