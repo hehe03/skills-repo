@@ -3,9 +3,19 @@ import json
 from pathlib import Path
 from typing import Any
 
+from trace_eval_utils import (
+    BAD_LABEL,
+    GOOD_LABEL,
+    Prediction,
+    filter_metadata_by_split,
+    load_metadata,
+    load_trace_records,
+    print_metrics_summary,
+    print_predictions,
+    write_metrics_markdown,
+    write_predictions_tsv,
+)
 
-GOOD_LABEL = "good case"
-BAD_LABEL = "bad case"
 OUTLINE_TASK_KEYWORD = "生成大纲"
 
 
@@ -15,15 +25,28 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("input_dir", help="Directory that contains trace JSON files.")
     parser.add_argument(
-        "--recursive",
-        action="store_true",
-        help="Search JSON files recursively.",
+        "metadata_csv",
+        help="Metadata CSV with columns: name,label,source,split.",
+    )
+    parser.add_argument(
+        "--split",
+        choices=["train", "test"],
+        help="Use only this split as evaluation set. Default: all samples.",
     )
     parser.add_argument(
         "--repeat-threshold",
         type=int,
         default=2,
         help="Mark as bad case when a consecutive repeated task or loop appears this many times. Default: 2.",
+    )
+    parser.add_argument(
+        "--output",
+        help="Optional TSV file for per-sample predictions.",
+    )
+    parser.add_argument(
+        "--metrics-output",
+        default="classify_traces_metrics.md",
+        help="Markdown metrics output path. Default: classify_traces_metrics.md.",
     )
     return parser.parse_args()
 
@@ -120,19 +143,10 @@ def classify_trace(trace: dict[str, Any], repeat_threshold: int) -> str:
     return BAD_LABEL
 
 
-def load_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def iter_json_files(input_dir: Path, recursive: bool) -> list[Path]:
-    pattern = "**/*.json" if recursive else "*.json"
-    return sorted(input_dir.glob(pattern))
-
-
 def main() -> int:
     args = parse_args()
     input_dir = Path(args.input_dir)
+    metadata_csv = Path(args.metadata_csv)
     repeat_threshold = args.repeat_threshold
 
     if repeat_threshold < 2:
@@ -147,24 +161,35 @@ def main() -> int:
         print(f"Input path is not a directory: {input_dir}")
         return 1
 
-    json_files = iter_json_files(input_dir, args.recursive)
-    if not json_files:
-        print("No JSON files found.")
+    if not metadata_csv.is_file():
+        print(f"Metadata CSV does not exist: {metadata_csv}")
+        return 1
+
+    metadata = filter_metadata_by_split(load_metadata(metadata_csv), args.split)
+    if not metadata:
+        print("No metadata rows selected.")
         return 0
 
-    good, bad = 0, 0
-    for json_file in json_files:
-        try:
-            trace = load_json(json_file)
-            label = classify_trace(trace, repeat_threshold)
-            if label == GOOD_LABEL:
-                good += 1
-            else:
-                bad += 1
-            print(f"{json_file.name}\t{label}")
-        except Exception as exc:
-            print(f"{json_file.name}\t{BAD_LABEL}\tload_error={exc}")
-    print(f"Good {good} / Bad {bad}")
+    records = load_trace_records(input_dir, metadata)
+    predictions: list[Prediction] = []
+    for record in records:
+        predicted_label = classify_trace(record.trace, repeat_threshold)
+        predictions.append(
+            Prediction(
+                name=record.meta.name,
+                source=record.meta.source,
+                split=record.meta.split,
+                actual_label=record.meta.label,
+                predicted_label=predicted_label,
+                detail={},
+            )
+        )
+
+    print_predictions(predictions)
+    print_metrics_summary(predictions)
+    if args.output:
+        write_predictions_tsv(predictions, Path(args.output))
+    write_metrics_markdown(predictions, Path(args.metrics_output), "Rule-based Trace Classification")
     return 0
 
 

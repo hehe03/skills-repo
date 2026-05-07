@@ -3,14 +3,25 @@ import csv
 import json
 import math
 import re
+import sys
 import statistics
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-GOOD_LABEL = "good case"
-BAD_LABEL = "bad case"
+from trace_eval_utils import (  # noqa: E402
+    BAD_LABEL,
+    GOOD_LABEL,
+    Prediction,
+    load_metadata,
+    load_trace_records,
+    print_metrics_summary,
+    print_predictions,
+    write_metrics_markdown,
+    write_predictions_tsv,
+)
+
 OUTLINE_TASK_KEYWORD = "生成大纲"
 
 FEATURE_NAMES = [
@@ -32,29 +43,14 @@ FEATURE_NAMES = [
 ]
 
 
-@dataclass(frozen=True)
-class TraceSample:
-    name: str
-    trace: dict[str, Any]
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Few-shot supervised trace classifier for good case / bad case."
     )
+    parser.add_argument("input_dir", help="Directory that contains trace JSON files.")
     parser.add_argument(
-        "input_path",
-        help="JSON/JSONL file or directory that contains trace files.",
-    )
-    parser.add_argument(
-        "--labels",
-        required=True,
-        help="CSV/TSV label file with columns: file,label.",
-    )
-    parser.add_argument(
-        "--recursive",
-        action="store_true",
-        help="Search JSON files recursively.",
+        "metadata_csv",
+        help="Metadata CSV with columns: name,label,source,split.",
     )
     parser.add_argument(
         "--threshold",
@@ -64,11 +60,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        help="Optional TSV output path. Uses utf-8-sig for Windows Excel.",
+        help="Optional TSV file for per-sample predictions.",
     )
     parser.add_argument(
         "--fields",
         help="Comma-separated top-level trace fields used for classification, for example: query,plan_list. Default: all fields.",
+    )
+    parser.add_argument(
+        "--metrics-output",
+        default="supervised_metrics.md",
+        help="Markdown metrics output path. Default: supervised_metrics.md.",
     )
     return parser.parse_args()
 
@@ -225,120 +226,6 @@ def sigmoid(value: float) -> float:
     return 1.0 / (1.0 + math.exp(-value))
 
 
-def normalize_label(value: str) -> str:
-    cleaned = value.strip().lower()
-    if cleaned in {"good", "good case", "goodcase", "1", "true", "是"}:
-        return GOOD_LABEL
-    if cleaned in {"bad", "bad case", "badcase", "0", "false", "否"}:
-        return BAD_LABEL
-    raise ValueError(f"Unknown label: {value}")
-
-
-def load_labels(path: Path) -> dict[str, str]:
-    with path.open("r", newline="", encoding="utf-8-sig") as file:
-        sample = file.read(2048)
-        file.seek(0)
-        delimiter = "\t" if "\t" in sample and "," not in sample else ","
-        reader = csv.DictReader(file, delimiter=delimiter)
-        if reader.fieldnames and {"file", "label"}.issubset(set(reader.fieldnames)):
-            return {
-                normalize_text(row["file"]): normalize_label(normalize_text(row["label"]))
-                for row in reader
-                if row.get("file") and row.get("label")
-            }
-
-        file.seek(0)
-        plain_reader = csv.reader(file, delimiter=delimiter)
-        labels: dict[str, str] = {}
-        for row in plain_reader:
-            if len(row) >= 2:
-                labels[normalize_text(row[0])] = normalize_label(normalize_text(row[1]))
-        return labels
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8-sig") as file:
-        data = json.load(file)
-    if not isinstance(data, dict):
-        raise ValueError("trace JSON root must be an object")
-    return data
-
-
-def iter_trace_files(input_dir: Path, recursive: bool) -> list[Path]:
-    json_pattern = "**/*.json" if recursive else "*.json"
-    jsonl_pattern = "**/*.jsonl" if recursive else "*.jsonl"
-    return sorted([*input_dir.glob(json_pattern), *input_dir.glob(jsonl_pattern)])
-
-
-def make_error_row(sample_name: str, message: str) -> dict[str, Any]:
-    return {
-        "file": sample_name,
-        "label": BAD_LABEL,
-        "score": "0.000",
-        "confidence": "1.000",
-        "nearest_good": "",
-        "nearest_bad": "",
-        "known_label": f"load_error={message}",
-    }
-
-
-def append_jsonl_samples(
-    path: Path,
-    sample_prefix: str | None,
-    samples: list[TraceSample],
-    error_rows: list[dict[str, Any]],
-) -> None:
-    with path.open("r", encoding="utf-8-sig") as file:
-        for line_number, line in enumerate(file, start=1):
-            if not line.strip():
-                continue
-
-            fallback_name = (
-                str(line_number)
-                if sample_prefix is None
-                else f"{sample_prefix}:{line_number}"
-            )
-            try:
-                data = json.loads(line)
-                if not isinstance(data, dict):
-                    raise ValueError("trace JSONL line root must be an object")
-                sample_name = normalize_text(data.get("sample_name")) or fallback_name
-                samples.append(TraceSample(sample_name, data))
-            except Exception as exc:
-                error_rows.append(make_error_row(fallback_name, str(exc)))
-
-
-def load_trace_samples(input_path: Path, recursive: bool) -> tuple[list[TraceSample], list[dict[str, Any]]]:
-    samples: list[TraceSample] = []
-    error_rows: list[dict[str, Any]] = []
-
-    if input_path.is_file():
-        suffix = input_path.suffix.lower()
-        if suffix == ".json":
-            try:
-                samples.append(TraceSample(input_path.name, load_json(input_path)))
-            except Exception as exc:
-                error_rows.append(make_error_row(input_path.name, str(exc)))
-        elif suffix == ".jsonl":
-            append_jsonl_samples(input_path, None, samples, error_rows)
-        else:
-            error_rows.append(make_error_row(input_path.name, "input file must be .json or .jsonl"))
-        return samples, error_rows
-
-    for trace_file in iter_trace_files(input_path, recursive):
-        sample_prefix = trace_file.relative_to(input_path).as_posix()
-        suffix = trace_file.suffix.lower()
-        if suffix == ".json":
-            try:
-                samples.append(TraceSample(sample_prefix, load_json(trace_file)))
-            except Exception as exc:
-                error_rows.append(make_error_row(sample_prefix, str(exc)))
-        elif suffix == ".jsonl":
-            append_jsonl_samples(trace_file, sample_prefix, samples, error_rows)
-
-    return samples, error_rows
-
-
 def feature_vector(features: dict[str, float]) -> list[float]:
     return [features[name] for name in FEATURE_NAMES]
 
@@ -388,40 +275,6 @@ def nearest_example(
     return nearest_name, nearest_distance
 
 
-def matched_label_key(sample_name: str, labels: dict[str, str]) -> str | None:
-    rel = normalize_text(sample_name).replace("\\", "/")
-    candidates = [
-        rel,
-        Path(rel).name,
-    ]
-    for candidate in candidates:
-        if candidate in labels:
-            return candidate
-    return None
-
-
-def write_rows(rows: list[dict[str, Any]], output: str | None) -> None:
-    fieldnames = [
-        "file",
-        "label",
-        "score",
-        "confidence",
-        "nearest_good",
-        "nearest_bad",
-        "known_label",
-    ]
-    if output:
-        with Path(output).open("w", newline="", encoding="utf-8-sig") as file:
-            writer = csv.DictWriter(file, fieldnames=fieldnames, delimiter="\t")
-            writer.writeheader()
-            writer.writerows(rows)
-        return
-
-    print("\t".join(fieldnames))
-    for row in rows:
-        print("\t".join(str(row[name]) for name in fieldnames))
-
-
 def main() -> int:
     args = parse_args()
     try:
@@ -430,44 +283,45 @@ def main() -> int:
         print(exc)
         return 1
 
-    input_path = Path(args.input_path)
-    if not input_path.exists():
-        print(f"Input path does not exist: {input_path}")
+    input_dir = Path(args.input_dir)
+    metadata_csv = Path(args.metadata_csv)
+    if not input_dir.is_dir():
+        print(f"Input path is not a directory: {input_dir}")
         return 1
 
-    labels = load_labels(Path(args.labels))
-    samples, rows = load_trace_samples(input_path, args.recursive)
-    if not samples and not rows:
-        print("No JSON/JSONL samples found.")
-        return 0
+    if not metadata_csv.is_file():
+        print(f"Metadata CSV does not exist: {metadata_csv}")
+        return 1
 
-    records: list[tuple[str, dict[str, float], str | None]] = []
-    labeled_features: list[tuple[str, str, dict[str, float]]] = []
+    metadata = load_metadata(metadata_csv)
+    train_metadata = [row for row in metadata if row.split == "train"]
+    test_metadata = [row for row in metadata if row.split == "test"]
+    if not train_metadata:
+        print("No train rows found in metadata.")
+        return 1
+    if not test_metadata:
+        print("No test rows found in metadata.")
+        return 1
 
-    for sample in samples:
-        try:
-            trace = filter_trace_fields(sample.trace, field_names)
-            features = extract_features(trace)
-            label_key = matched_label_key(sample.name, labels)
-            known_label = labels[label_key] if label_key else None
-            records.append((sample.name, features, known_label))
-            if known_label:
-                labeled_features.append((sample.name, known_label, features))
-        except Exception as exc:
-            rows.append(make_error_row(sample.name, str(exc)))
+    train_records = load_trace_records(input_dir, train_metadata)
+    test_records = load_trace_records(input_dir, test_metadata)
 
-    good_count = sum(1 for _, label, _ in labeled_features if label == GOOD_LABEL)
-    bad_count = sum(1 for _, label, _ in labeled_features if label == BAD_LABEL)
+    train_features: list[tuple[str, str, dict[str, float]]] = []
+    for record in train_records:
+        trace = filter_trace_fields(record.trace, field_names)
+        features = extract_features(trace)
+        train_features.append((record.meta.name, record.meta.label, features))
+
+    good_count = sum(1 for _, label, _ in train_features if label == GOOD_LABEL)
+    bad_count = sum(1 for _, label, _ in train_features if label == BAD_LABEL)
     if good_count == 0 or bad_count == 0:
-        print("Label file must include at least one good case and one bad case sample.")
+        print("Train split must include at least one goodcase and one badcase sample.")
         return 1
-    if good_count > 5 or bad_count > 5:
-        print("Warning: recommended labels are no more than 5 samples per class.")
 
-    medians, scales = fit_scaler([features for _, _, features in labeled_features])
+    medians, scales = fit_scaler([features for _, _, features in train_features])
     scaled_labeled = [
         (name, label, scale_features(features, medians, scales))
-        for name, label, features in labeled_features
+        for name, label, features in train_features
     ]
     good_examples = [
         (name, vector) for name, label, vector in scaled_labeled if label == GOOD_LABEL
@@ -486,27 +340,38 @@ def main() -> int:
         1.0,
     )
 
-    for sample_name, features, known_label in records:
+    predictions: list[Prediction] = []
+    for record in test_records:
+        trace = filter_trace_fields(record.trace, field_names)
+        features = extract_features(trace)
         vector = scale_features(features, medians, scales)
         distance_to_good = euclidean(vector, good_centroid)
         distance_to_bad = euclidean(vector, bad_centroid)
         score = sigmoid((distance_to_bad - distance_to_good) / distance_scale)
-        label = GOOD_LABEL if score >= args.threshold else BAD_LABEL
+        predicted_label = GOOD_LABEL if score >= args.threshold else BAD_LABEL
         nearest_good, _ = nearest_example(vector, good_examples)
         nearest_bad, _ = nearest_example(vector, bad_examples)
-        rows.append(
-            {
-                "file": sample_name,
-                "label": label,
-                "score": f"{score:.3f}",
-                "confidence": f"{abs(score - 0.5) * 2:.3f}",
-                "nearest_good": nearest_good,
-                "nearest_bad": nearest_bad,
-                "known_label": known_label or "",
-            }
+        predictions.append(
+            Prediction(
+                name=record.meta.name,
+                source=record.meta.source,
+                split=record.meta.split,
+                actual_label=record.meta.label,
+                predicted_label=predicted_label,
+                detail={
+                    "score": f"{score:.3f}",
+                    "confidence": f"{abs(score - 0.5) * 2:.3f}",
+                    "nearest_good": nearest_good,
+                    "nearest_bad": nearest_bad,
+                },
+            )
         )
 
-    write_rows(rows, args.output)
+    print_predictions(predictions)
+    print_metrics_summary(predictions)
+    if args.output:
+        write_predictions_tsv(predictions, Path(args.output))
+    write_metrics_markdown(predictions, Path(args.metrics_output), "Supervised Trace Classification")
     return 0
 
 
