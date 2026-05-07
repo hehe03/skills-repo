@@ -1,5 +1,4 @@
 import argparse
-import json
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +18,7 @@ from trace_eval_utils import (
 OUTLINE_TASK_KEYWORD = "生成大纲"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Classify trace JSON files into good case or bad case."
     )
@@ -36,8 +35,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--repeat-threshold",
         type=int,
-        default=2,
-        help="Mark as bad case when a consecutive repeated task or loop appears this many times. Default: 2.",
+        default=None,
+        help="Enable repeated/loop task detection and mark as badcase when the pattern appears this many times. Default: disabled.",
     )
     parser.add_argument(
         "--output",
@@ -48,7 +47,7 @@ def parse_args() -> argparse.Namespace:
         default="classify_traces_metrics.md",
         help="Markdown metrics output path. Default: classify_traces_metrics.md.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def is_normal_result(result: Any) -> bool:
@@ -122,12 +121,12 @@ def has_repeated_or_loop_tasks(plan_list: list[Any], repeat_threshold: int) -> b
     return False
 
 
-def classify_trace(trace: dict[str, Any], repeat_threshold: int) -> str:
+def classify_trace(trace: dict[str, Any], repeat_threshold: int | None) -> str:
     plan_list = trace.get("plan_list")
     if not isinstance(plan_list, list):
         return BAD_LABEL
 
-    if has_repeated_or_loop_tasks(plan_list, repeat_threshold):
+    if repeat_threshold is not None and has_repeated_or_loop_tasks(plan_list, repeat_threshold):
         return BAD_LABEL
 
     for task in plan_list:
@@ -143,13 +142,13 @@ def classify_trace(trace: dict[str, Any], repeat_threshold: int) -> str:
     return BAD_LABEL
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     input_dir = Path(args.input_dir)
     metadata_csv = Path(args.metadata_csv)
     repeat_threshold = args.repeat_threshold
 
-    if repeat_threshold < 2:
+    if repeat_threshold is not None and repeat_threshold < 2:
         print("--repeat-threshold must be greater than or equal to 2.")
         return 1
 
@@ -194,4 +193,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Set INLINE_ARGS to run from an editor without command-line arguments.
+    # Example:
+    # INLINE_ARGS = [r".\traces", r".\metadata.csv", "--split", "test"]
+    INLINE_ARGS: list[str] | None = None
+    raise SystemExit(main(INLINE_ARGS))
