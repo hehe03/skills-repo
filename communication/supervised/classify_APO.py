@@ -119,7 +119,12 @@ def parse_args(argv: list[Any] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--show-progress",
         action="store_true",
-        help="Print progress for every student-model classification batch.",
+        help="Deprecated: progress is shown by default.",
+    )
+    parser.add_argument(
+        "--quiet-progress",
+        action="store_true",
+        help="Do not print progress for student/teacher APO steps.",
     )
     return parser.parse_args([str(item) for item in argv] if argv is not None else None)
 
@@ -296,6 +301,10 @@ def classify_records_with_prompt(
                 )
             )
     return predictions
+
+
+def progress_enabled(args: argparse.Namespace) -> bool:
+    return not args.quiet_progress
 
 
 def evaluate_prompt(
@@ -497,8 +506,14 @@ def main(argv: list[Any] | None = None) -> int:
 
     initial_prompt = load_initial_prompt(args.prompt_file)
     current_prompt = initial_prompt
+    show_progress = progress_enabled(args)
+    print(
+        f"[APO] loaded {len(train_records)} train samples and {len(test_records)} test samples",
+        flush=True,
+    )
     print("[APO] evaluating initial prompt on test split", flush=True)
-    current_result = evaluate_prompt(test_records, current_prompt, args.batch, args.show_progress, "baseline")
+    current_result = evaluate_prompt(test_records, current_prompt, args.batch, show_progress, "baseline")
+    print(f"[APO] baseline badcase F1={current_result.f1:.4f}", flush=True)
     best_prompt = current_prompt
     best_result = current_result
     baseline_result = current_result
@@ -516,15 +531,24 @@ def main(argv: list[Any] | None = None) -> int:
                 train_batch,
                 current_prompt,
                 args.batch,
-                args.show_progress,
+                show_progress,
                 f"train-e{epoch_index}-b{batch_index}",
             )
             critique_query = build_critique_query(current_prompt, train_batch, train_predictions)
+            if show_progress:
+                print(f"[APO] epoch {epoch_index}, batch {batch_index}: asking teacher for critique", flush=True)
             suggestion = str(llm_teacher_generate(critique_query) or "").strip()
 
             optimize_query = build_optimize_query(current_prompt, suggestion, args.candidates)
+            if show_progress:
+                print(f"[APO] epoch {epoch_index}, batch {batch_index}: asking teacher for prompt candidates", flush=True)
             candidate_raw = str(llm_teacher_generate(optimize_query) or "")
             candidate_prompts = parse_candidate_prompts(candidate_raw)
+            if show_progress:
+                print(
+                    f"[APO] epoch {epoch_index}, batch {batch_index}: received {len(candidate_prompts)} candidate prompt(s)",
+                    flush=True,
+                )
 
             best_candidate_prompt = current_prompt
             best_candidate_result = current_result
@@ -534,8 +558,12 @@ def main(argv: list[Any] | None = None) -> int:
                     test_records,
                     candidate_prompt,
                     args.batch,
-                    args.show_progress,
+                    show_progress,
                     f"candidate-e{epoch_index}-b{batch_index}-{candidate_index}",
+                )
+                print(
+                    f"[APO] candidate {candidate_index}/{len(candidate_prompts)} badcase F1={candidate_result.f1:.4f}",
+                    flush=True,
                 )
                 if metric_tuple(candidate_result) > metric_tuple(best_candidate_result):
                     best_candidate_prompt = candidate_prompt
