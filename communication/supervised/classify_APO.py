@@ -60,7 +60,7 @@ class IterationLog:
 
 
 def llm_student_generate(query: str) -> str:
-    # TODO: Fill in your student-model LLM call here.
+    # Fill in your student-model LLM call here.
     # Input is the complete query. Output is the raw model result.
     llm = UniAIGC()
     res = llm.client_qwen3_32b(query)
@@ -68,9 +68,9 @@ def llm_student_generate(query: str) -> str:
 
 
 def llm_teacher_generate(query: str) -> str:
-    # TODO: Fill in your teacher-model LLM call here.
+    # Fill in your teacher-model LLM call here.
     llm = UniAIGC()
-    res = llm.client_qwen72b(query)
+    res = llm.client_qwen3_32b(query)
     return res
 
 
@@ -617,5 +617,5 @@ if __name__ == "__main__":
     # Example:
     # INLINE_ARGS = [r".\traces", r".\metadata.csv", "--batch", 4, "--epoch", 2]
     INLINE_ARGS: list[Any] | None = None
-    INLINE_ARGS = [r"D:\Data\agent\trace\all", r"..\..\高交all.csv", "--batch", 2, "--epoch", 2]
+    INLINE_ARGS = [r"D:\Data\agent\trace\all", r"..\..\高交all.csv", "--batch", 2, "--epoch", 3]
     raise SystemExit(main(INLINE_ARGS))
