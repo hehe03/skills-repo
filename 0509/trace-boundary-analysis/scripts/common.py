@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 GOOD_LABEL = "goodcase"
 BAD_LABEL = "badcase"
+OUTLINE_TASK_KEYWORD = "生成大纲"
 
 
 @dataclass(frozen=True)

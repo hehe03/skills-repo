@@ -5,6 +5,7 @@ from pathlib import Path
 import classify_rule
 import classify_supervised
 import classify_unsupervised
+import classify_unsupervised_hybrid
 from common import (
     BAD_LABEL,
     GOOD_LABEL,
@@ -23,7 +24,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--metadata", help="可选 metadata CSV，推荐列：name,label,source,split。")
     parser.add_argument(
         "--strategy",
-        choices=["auto", "rule", "unsupervised", "supervised"],
+        choices=["auto", "rule", "unsupervised", "unsupervised_hybrid", "supervised"],
         default="auto",
         help="分类方法，默认 auto。",
     )
@@ -38,6 +39,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bad-risk-threshold", type=float, default=0.55, help="无监督 bad-risk 阈值。")
     parser.add_argument("--bad-risk-weight", type=float, default=0.45, help="无监督 bad-risk 惩罚权重。")
     parser.add_argument("--centrality-weight", type=float, default=0.10, help="无监督批内中心性权重。")
+    parser.add_argument("--hybrid-threshold", type=float, default=0.52, help="hybrid 方法 good_score 阈值。")
+    parser.add_argument("--hybrid-bad-risk-threshold", type=float, default=0.62, help="hybrid 方法 bad_score 阈值。")
+    parser.add_argument("--good-margin", type=float, default=0.08, help="hybrid 方法判 badcase 时要求 bad_score 超过 good_score 的最小边距。")
     parser.add_argument("--supervised-threshold", type=float, default=0.85, help="监督法 goodcase 阈值。")
     parser.add_argument("--output", help="可选 JSON 输出路径。")
     return parser.parse_args(argv)
@@ -76,6 +80,14 @@ def main(argv: list[str] | None = None) -> int:
             threshold=args.threshold,
             bad_risk_threshold=args.bad_risk_threshold,
             bad_risk_weight=args.bad_risk_weight,
+            centrality_weight=args.centrality_weight,
+        )
+    elif strategy == "unsupervised_hybrid":
+        predictions = classify_unsupervised_hybrid.classify(
+            items,
+            threshold=args.hybrid_threshold,
+            bad_risk_threshold=args.hybrid_bad_risk_threshold,
+            good_margin=args.good_margin,
             centrality_weight=args.centrality_weight,
         )
     elif strategy == "supervised":

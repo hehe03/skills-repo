@@ -15,6 +15,7 @@ trace-boundary-analysis/
     ├── features.py
     ├── classify_rule.py
     ├── classify_unsupervised.py
+    ├── classify_unsupervised_hybrid.py
     └── classify_supervised.py
 ```
 
@@ -28,6 +29,7 @@ trace-boundary-analysis/
 - `scripts/features.py`：公共特征抽取逻辑，包括任务数量、任务多样性、工具多样性、结果非空比例、重复/循环模式、大纲生成信号等。
 - `scripts/classify_rule.py`：规则法，适合单条或少量 trace 快速筛查。
 - `scripts/classify_unsupervised.py`：无监督特征评分法，适合没有训练集但有一批 trace 的场景。
+- `scripts/classify_unsupervised_hybrid.py`：混合无监督特征法，拆分结构、重复、结果、流程、语义子风险；“生成大纲”是较大权重特征，但不是绝对判定证据。
 - `scripts/classify_supervised.py`：有监督特征法，适合 metadata 中已有可用 `train/test` 标注的场景。
 
 ## 输入规范
@@ -83,6 +85,7 @@ python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.
 ```powershell
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy rule
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy unsupervised
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy unsupervised_hybrid
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy supervised --metadata <metadata.csv>
 ```
 

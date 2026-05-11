@@ -20,6 +20,7 @@ trace-boundary-analysis/
     ├── features.py
     ├── classify_rule.py
     ├── classify_unsupervised.py
+    ├── classify_unsupervised_hybrid.py
     └── classify_supervised.py
 ```
 
@@ -28,6 +29,7 @@ trace-boundary-analysis/
 - `features.py`：公共特征抽取逻辑。
 - `classify_rule.py`：规则法，从 `rules.md` 读取规则配置。
 - `classify_unsupervised.py`：无监督特征评分法。
+- `classify_unsupervised_hybrid.py`：混合无监督特征法，输出结构、重复、结果、流程、语义子风险；“生成大纲”是较大权重特征，但不是 100% 判定证据。
 - `classify_supervised.py`：有监督特征法。
 
 维护规则法时，先更新 `rules.md`；只有当现有配置表达不了新规则时，再修改 `scripts/classify_rule.py`。
@@ -107,6 +109,10 @@ name,label,source,split
 
 无监督特征法适合没有训练集但有一批 trace 的场景。它会抽取任务数量、任务多样性、工具多样性、结果非空比例、连续重复、循环模式、结果多样性、是否生成大纲等特征，然后组合 `behavior_prior` 与 `bad_risk` 做判断。
 
+### unsupervised_hybrid
+
+混合无监督特征法适合需要更强解释性的无监督实验。它将风险拆成 `structure_risk`、`repeat_risk`、`result_risk`、`flow_risk`、`semantic_risk`，并计算 `good_score`。其中 `生成大纲` 是 `flow_risk` 和 `good_score` 的高权重信号，但不会单独决定最终标签。
+
 ### supervised
 
 有监督特征法适合已有 `train/test` 标注的场景。它会基于 `train` 样本拟合 goodcase / badcase 特征质心，再根据待测样本到两个质心的距离生成预测，并给出最近的正负样本作为解释。
@@ -130,6 +136,7 @@ python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.
 ```powershell
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy rule
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy unsupervised
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy unsupervised_hybrid
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy supervised --metadata <metadata.csv>
 ```
 
