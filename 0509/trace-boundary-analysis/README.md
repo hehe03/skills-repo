@@ -107,8 +107,14 @@ python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-rule
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-unsupervised
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-supervised
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-ensemble
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-all
 ```
+
+`--sweep-ensemble` 会扫描 `rule + unsupervised` 组合：
+
+- `ensemble_rule_unsupervised_or`：任一方法判 badcase 即判 badcase，通常用于提升 recall。
+- `ensemble_rule_unsupervised_and`：两个方法都判 badcase 才判 badcase，通常用于提升 precision。
 
 sweep 会自动生成 Markdown 文件，默认输出到当前目录，文件名格式为：
 

@@ -54,6 +54,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sweep-rule", action="store_true", help="对 rule 方法做 repeat_threshold 扫描。")
     parser.add_argument("--sweep-unsupervised", action="store_true", help="对 unsupervised 方法做参数扫描。")
     parser.add_argument("--sweep-supervised", action="store_true", help="对 supervised 方法做 threshold 扫描。")
+    parser.add_argument("--sweep-ensemble", action="store_true", help="对 rule + unsupervised 组合方法做参数扫描。")
     parser.add_argument("--sweep-all", action="store_true", help="依次扫描 rule、unsupervised、unsupervised_hybrid、supervised。")
     parser.add_argument(
         "--sweep-repeat-thresholds",
@@ -255,6 +256,66 @@ def run_supervised_sweep(args, items) -> list[dict[str, float | int | str]]:
     return sort_sweep_rows(rows)
 
 
+def combine_predictions(rule_predictions, other_predictions, mode: str):
+    combined = []
+    other_by_name = {prediction.name: prediction for prediction in other_predictions}
+    for rule_prediction in rule_predictions:
+        other_prediction = other_by_name[rule_prediction.name]
+        rule_bad = rule_prediction.predicted_label == BAD_LABEL
+        other_bad = other_prediction.predicted_label == BAD_LABEL
+        if mode == "or":
+            predicted_label = BAD_LABEL if rule_bad or other_bad else GOOD_LABEL
+        elif mode == "and":
+            predicted_label = BAD_LABEL if rule_bad and other_bad else GOOD_LABEL
+        else:
+            raise ValueError(f"Unsupported ensemble mode: {mode}")
+        reason = f"ensemble_{mode}: rule={rule_prediction.predicted_label}; unsupervised={other_prediction.predicted_label}"
+        combined.append(
+            type(rule_prediction)(
+                name=rule_prediction.name,
+                source=rule_prediction.source,
+                split=rule_prediction.split,
+                actual_label=rule_prediction.actual_label,
+                predicted_label=predicted_label,
+                detail={"reason": reason},
+            )
+        )
+    return combined
+
+
+def run_ensemble_sweep(args, items) -> list[dict[str, float | int | str]]:
+    rows: list[dict[str, float | int | str]] = []
+    for repeat_threshold in parse_int_list(args.sweep_repeat_thresholds):
+        rule_predictions = classify_rule.classify(items, repeat_threshold)
+        for threshold in parse_float_list(args.sweep_thresholds):
+            for bad_threshold in parse_float_list(args.sweep_bad_risk_thresholds):
+                for bad_weight in parse_float_list(args.sweep_bad_risk_weights):
+                    for centrality_weight in parse_float_list(args.sweep_centrality_weights):
+                        unsup_predictions = classify_unsupervised.classify(
+                            items,
+                            threshold=threshold,
+                            bad_risk_threshold=bad_threshold,
+                            bad_risk_weight=bad_weight,
+                            centrality_weight=centrality_weight,
+                        )
+                        for mode in ["or", "and"]:
+                            predictions = combine_predictions(rule_predictions, unsup_predictions, mode)
+                            rows.append(
+                                build_metric_row(
+                                    f"ensemble_rule_unsupervised_{mode}",
+                                    {
+                                        "repeat_threshold": repeat_threshold,
+                                        "threshold": threshold,
+                                        "bad_risk_threshold": bad_threshold,
+                                        "bad_risk_weight": bad_weight,
+                                        "centrality_weight": centrality_weight,
+                                    },
+                                    predictions,
+                                )
+                            )
+    return sort_sweep_rows(rows)
+
+
 def print_sweep(rows: list[dict[str, float | int | str]]) -> None:
     columns = build_sweep_columns(rows)
     print("\t".join(columns))
@@ -323,6 +384,8 @@ def sweep_method_name(args) -> str:
         names.append("unsupervised_hybrid")
     if args.sweep_supervised:
         names.append("supervised")
+    if args.sweep_ensemble:
+        names.append("ensemble")
     return "_".join(names) + "_sweep" if names else "sweep"
 
 
@@ -378,7 +441,14 @@ def main(argv: list[str] | None = None) -> int:
         print("No trace samples selected.")
         return 0
 
-    if args.sweep_all or args.sweep_rule or args.sweep_unsupervised or args.sweep_hybrid or args.sweep_supervised:
+    if (
+        args.sweep_all
+        or args.sweep_rule
+        or args.sweep_unsupervised
+        or args.sweep_hybrid
+        or args.sweep_supervised
+        or args.sweep_ensemble
+    ):
         rows: list[dict[str, float | int | str]] = []
         if args.sweep_all or args.sweep_rule:
             rows.extend(run_rule_sweep(args, items))
@@ -388,6 +458,8 @@ def main(argv: list[str] | None = None) -> int:
             rows.extend(run_hybrid_sweep(args, items))
         if (args.sweep_all or args.sweep_supervised) and has_supervised_training(items):
             rows.extend(run_supervised_sweep(args, items))
+        if args.sweep_all or args.sweep_ensemble:
+            rows.extend(run_ensemble_sweep(args, items))
         rows = sort_sweep_rows(rows)
         print_sweep(rows)
         method_name = sweep_method_name(args)

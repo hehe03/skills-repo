@@ -59,6 +59,50 @@
 |                                     |      |     |
 |                                     |      |     |
 
+<!-- RULE_CONFIG_START -->
+```json
+{
+  "version": "rule-v0",
+  "default_label_when_no_bad_rule_matches": "goodcase",
+  "final_result_fields": [
+    "final_result",
+    "answer",
+    "response"
+  ],
+  "success_task_keywords": [
+    "生成大纲"
+  ],
+  "failure_markers": [
+    "error",
+    "failed",
+    "exception",
+    "traceback",
+    "null",
+    "none",
+    "失败",
+    "报错",
+    "异常",
+    "未找到",
+    "无权限",
+    "超时",
+    "无法获取",
+    "无结果",
+    "没有查询到",
+    "请求失败"
+  ],
+  "badcase_rules": {
+    "plan_list_required": true,
+    "empty_plan_without_final_result": true,
+    "all_step_results_empty": true,
+    "failed_step_continue_with_new_command": true,
+    "repeated_or_loop_tasks": {
+      "enabled": true,
+      "repeat_threshold": 3,
+      "include_command_args": true
+    }
+  }
+}
+```
 <!-- RULE_CONFIG_END -->
 
  
