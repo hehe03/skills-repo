@@ -1,5 +1,7 @@
 import argparse
+import sys
 import json
+from datetime import datetime
 from pathlib import Path
 
 import classify_rule
@@ -100,6 +102,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="supervised threshold 扫描列表，逗号分隔。",
     )
     parser.add_argument("--output", help="可选 JSON 输出路径。")
+    parser.add_argument("--sweep-output-dir", default=".", help="sweep Markdown 结果输出目录，默认当前目录。")
     return parser.parse_args(argv)
 
 
@@ -253,6 +256,13 @@ def run_supervised_sweep(args, items) -> list[dict[str, float | int | str]]:
 
 
 def print_sweep(rows: list[dict[str, float | int | str]]) -> None:
+    columns = build_sweep_columns(rows)
+    print("\t".join(columns))
+    for index, row in enumerate(rows, start=1):
+        print("\t".join(format_sweep_row(row, columns, index)))
+
+
+def build_sweep_columns(rows: list[dict[str, float | int | str]]) -> list[str]:
     param_keys = sorted(
         {
             key
@@ -272,7 +282,7 @@ def print_sweep(rows: list[dict[str, float | int | str]]) -> None:
             }
         }
     )
-    columns = [
+    return [
         "rank",
         "strategy",
         *param_keys,
@@ -285,19 +295,78 @@ def print_sweep(rows: list[dict[str, float | int | str]]) -> None:
         "tn",
         "predicted_bad",
     ]
-    print("\t".join(columns))
+
+
+def format_sweep_row(row: dict[str, float | int | str], columns: list[str], rank: int) -> list[str]:
+    values: list[str] = []
+    for column in columns:
+        if column == "rank":
+            values.append(str(rank))
+            continue
+        value = row.get(column, "")
+        if isinstance(value, float):
+            values.append(f"{value:.4f}")
+        else:
+            values.append(str(value))
+    return values
+
+
+def sweep_method_name(args) -> str:
+    names: list[str] = []
+    if args.sweep_all:
+        return "all_sweep"
+    if args.sweep_rule:
+        names.append("rule")
+    if args.sweep_unsupervised:
+        names.append("unsupervised")
+    if args.sweep_hybrid:
+        names.append("unsupervised_hybrid")
+    if args.sweep_supervised:
+        names.append("supervised")
+    return "_".join(names) + "_sweep" if names else "sweep"
+
+
+def write_sweep_markdown(
+    rows: list[dict[str, float | int | str]],
+    args,
+    method_name: str,
+) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = Path(args.sweep_output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{method_name}_{timestamp}.md"
+    columns = build_sweep_columns(rows)
+
+    lines = [
+        f"# {method_name} 参数扫描结果",
+        "",
+        f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- 输入路径：`{args.input_path}`",
+        f"- metadata：`{args.metadata or ''}`",
+        f"- split：`{args.split or 'all'}`",
+        f"- 命令：`{' '.join(sys.argv)}`",
+        "",
+        "## 结果",
+        "",
+        "| " + " | ".join(columns) + " |",
+        "| " + " | ".join("---" for _ in columns) + " |",
+    ]
     for index, row in enumerate(rows, start=1):
-        values: list[str] = []
-        for column in columns:
-            if column == "rank":
-                values.append(str(index))
-                continue
-            value = row.get(column, "")
-            if isinstance(value, float):
-                values.append(f"{value:.4f}")
-            else:
-                values.append(str(value))
-        print("\t".join(values))
+        lines.append("| " + " | ".join(format_sweep_row(row, columns, index)) + " |")
+
+    lines.extend(
+        [
+            "",
+            "## 选择建议",
+            "",
+            "- 优先看 precision 较高且 predicted_bad 不过低的行。",
+            "- 如果 precision 很高但 recall 接近 0，通常说明参数过保守。",
+            "- 如果 recall 高但 FP 明显增多，下一轮应提高 bad-risk 阈值或 margin。",
+            "",
+        ]
+    )
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+    return output_path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -321,6 +390,9 @@ def main(argv: list[str] | None = None) -> int:
             rows.extend(run_supervised_sweep(args, items))
         rows = sort_sweep_rows(rows)
         print_sweep(rows)
+        method_name = sweep_method_name(args)
+        markdown_path = write_sweep_markdown(rows, args, method_name)
+        print(f"\nSweep markdown written: {markdown_path}")
         if args.output:
             output = {
                 "strategy": "sweep",

@@ -110,6 +110,18 @@ python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-all
 ```
 
+sweep 会自动生成 Markdown 文件，默认输出到当前目录，文件名格式为：
+
+```text
+<方法名>_sweep_<YYYYMMDD_HHMMSS>.md
+```
+
+指定 Markdown 输出目录：
+
+```powershell
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-all --sweep-output-dir .\results
+```
+
 自定义扫描范围：
 
 ```powershell
