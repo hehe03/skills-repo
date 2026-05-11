@@ -152,6 +152,15 @@ python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-hybrid
 ```
 
+扫描其它方法或一次性扫描全部方法：
+
+```powershell
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-rule
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-unsupervised
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-supervised
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-all
+```
+
 ## 输出解释
 
 终端默认输出：

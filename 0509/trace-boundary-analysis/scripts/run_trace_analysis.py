@@ -49,6 +49,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="对 hybrid 方法做阈值扫描，输出多组 precision/recall。",
     )
+    parser.add_argument("--sweep-rule", action="store_true", help="对 rule 方法做 repeat_threshold 扫描。")
+    parser.add_argument("--sweep-unsupervised", action="store_true", help="对 unsupervised 方法做参数扫描。")
+    parser.add_argument("--sweep-supervised", action="store_true", help="对 supervised 方法做 threshold 扫描。")
+    parser.add_argument("--sweep-all", action="store_true", help="依次扫描 rule、unsupervised、unsupervised_hybrid、supervised。")
+    parser.add_argument(
+        "--sweep-repeat-thresholds",
+        default="2,3,4",
+        help="rule repeat_threshold 扫描列表，逗号分隔。",
+    )
+    parser.add_argument(
+        "--sweep-thresholds",
+        default="0.45,0.50,0.55,0.60,0.65",
+        help="unsupervised score 阈值扫描列表，逗号分隔。",
+    )
+    parser.add_argument(
+        "--sweep-bad-risk-thresholds",
+        default="0.45,0.50,0.55,0.60,0.65,0.70",
+        help="unsupervised bad-risk 阈值扫描列表，逗号分隔。",
+    )
+    parser.add_argument(
+        "--sweep-bad-risk-weights",
+        default="0.30,0.45,0.60",
+        help="unsupervised bad-risk 权重扫描列表，逗号分隔。",
+    )
+    parser.add_argument(
+        "--sweep-centrality-weights",
+        default="0.00,0.10,0.20",
+        help="unsupervised/hybrid centrality 权重扫描列表，逗号分隔。",
+    )
     parser.add_argument(
         "--sweep-hybrid-thresholds",
         default="0.45,0.50,0.55,0.60",
@@ -65,6 +94,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="hybrid good_margin 扫描列表，逗号分隔。",
     )
     parser.add_argument("--supervised-threshold", type=float, default=0.85, help="监督法 goodcase 阈值。")
+    parser.add_argument(
+        "--sweep-supervised-thresholds",
+        default="0.50,0.65,0.75,0.85,0.90",
+        help="supervised threshold 扫描列表，逗号分隔。",
+    )
     parser.add_argument("--output", help="可选 JSON 输出路径。")
     return parser.parse_args(argv)
 
@@ -75,6 +109,17 @@ def parse_float_list(value: str) -> list[float]:
         stripped = item.strip()
         if stripped:
             numbers.append(float(stripped))
+    if not numbers:
+        raise ValueError("阈值列表不能为空。")
+    return numbers
+
+
+def parse_int_list(value: str) -> list[int]:
+    numbers: list[int] = []
+    for item in value.split(","):
+        stripped = item.strip()
+        if stripped:
+            numbers.append(int(stripped))
     if not numbers:
         raise ValueError("阈值列表不能为空。")
     return numbers
@@ -95,36 +140,34 @@ def resolve_strategy(strategy: str, items) -> str:
     return "rule"
 
 
-def run_hybrid_sweep(args, items) -> list[dict[str, float | int]]:
-    rows: list[dict[str, float | int]] = []
-    for threshold in parse_float_list(args.sweep_hybrid_thresholds):
-        for bad_threshold in parse_float_list(args.sweep_hybrid_bad_risk_thresholds):
-            for margin in parse_float_list(args.sweep_good_margins):
-                predictions = classify_unsupervised_hybrid.classify(
-                    items,
-                    threshold=threshold,
-                    bad_risk_threshold=bad_threshold,
-                    good_margin=margin,
-                    centrality_weight=args.centrality_weight,
-                )
-                matrix = badcase_confusion(predictions)
-                metrics = badcase_metrics(matrix)
-                predicted_bad = matrix["tp"] + matrix["fp"]
-                rows.append(
-                    {
-                        "hybrid_threshold": threshold,
-                        "hybrid_bad_risk_threshold": bad_threshold,
-                        "good_margin": margin,
-                        "precision": metrics["precision"],
-                        "recall": metrics["recall"],
-                        "f1": metrics["f1"],
-                        "tp": matrix["tp"],
-                        "fp": matrix["fp"],
-                        "fn": matrix["fn"],
-                        "tn": matrix["tn"],
-                        "predicted_bad": predicted_bad,
-                    }
-                )
+def has_supervised_training(items) -> bool:
+    train_labels = {
+        item.meta.label
+        for item in items
+        if item.meta.split == "train" and item.meta.label in {GOOD_LABEL, BAD_LABEL}
+    }
+    return train_labels == {GOOD_LABEL, BAD_LABEL}
+
+
+def build_metric_row(strategy: str, params: dict[str, float | int], predictions) -> dict[str, float | int | str]:
+    matrix = badcase_confusion(predictions)
+    metrics = badcase_metrics(matrix)
+    row: dict[str, float | int | str] = {
+        "strategy": strategy,
+        **params,
+        "precision": metrics["precision"],
+        "recall": metrics["recall"],
+        "f1": metrics["f1"],
+        "tp": matrix["tp"],
+        "fp": matrix["fp"],
+        "fn": matrix["fn"],
+        "tn": matrix["tn"],
+        "predicted_bad": matrix["tp"] + matrix["fp"],
+    }
+    return row
+
+
+def sort_sweep_rows(rows: list[dict[str, float | int | str]]) -> list[dict[str, float | int | str]]:
     rows.sort(
         key=lambda row: (
             row["precision"],
@@ -137,27 +180,124 @@ def run_hybrid_sweep(args, items) -> list[dict[str, float | int]]:
     return rows
 
 
-def print_hybrid_sweep(rows: list[dict[str, float | int]]) -> None:
-    print(
-        "rank\thybrid_threshold\thybrid_bad_risk_threshold\tgood_margin\tprecision\trecall\tf1\ttp\tfp\tfn\ttn\tpredicted_bad"
+def run_rule_sweep(args, items) -> list[dict[str, float | int | str]]:
+    rows: list[dict[str, float | int | str]] = []
+    for repeat_threshold in parse_int_list(args.sweep_repeat_thresholds):
+        predictions = classify_rule.classify(items, repeat_threshold)
+        rows.append(build_metric_row("rule", {"repeat_threshold": repeat_threshold}, predictions))
+    return sort_sweep_rows(rows)
+
+
+def run_unsupervised_sweep(args, items) -> list[dict[str, float | int | str]]:
+    rows: list[dict[str, float | int | str]] = []
+    for threshold in parse_float_list(args.sweep_thresholds):
+        for bad_threshold in parse_float_list(args.sweep_bad_risk_thresholds):
+            for bad_weight in parse_float_list(args.sweep_bad_risk_weights):
+                for centrality_weight in parse_float_list(args.sweep_centrality_weights):
+                    predictions = classify_unsupervised.classify(
+                        items,
+                        threshold=threshold,
+                        bad_risk_threshold=bad_threshold,
+                        bad_risk_weight=bad_weight,
+                        centrality_weight=centrality_weight,
+                    )
+                    rows.append(
+                        build_metric_row(
+                            "unsupervised",
+                            {
+                                "threshold": threshold,
+                                "bad_risk_threshold": bad_threshold,
+                                "bad_risk_weight": bad_weight,
+                                "centrality_weight": centrality_weight,
+                            },
+                            predictions,
+                        )
+                    )
+    return sort_sweep_rows(rows)
+
+
+def run_hybrid_sweep(args, items) -> list[dict[str, float | int | str]]:
+    rows: list[dict[str, float | int | str]] = []
+    for threshold in parse_float_list(args.sweep_hybrid_thresholds):
+        for bad_threshold in parse_float_list(args.sweep_hybrid_bad_risk_thresholds):
+            for margin in parse_float_list(args.sweep_good_margins):
+                for centrality_weight in parse_float_list(args.sweep_centrality_weights):
+                    predictions = classify_unsupervised_hybrid.classify(
+                        items,
+                        threshold=threshold,
+                        bad_risk_threshold=bad_threshold,
+                        good_margin=margin,
+                        centrality_weight=centrality_weight,
+                    )
+                    rows.append(
+                        build_metric_row(
+                            "unsupervised_hybrid",
+                            {
+                                "hybrid_threshold": threshold,
+                                "hybrid_bad_risk_threshold": bad_threshold,
+                                "good_margin": margin,
+                                "centrality_weight": centrality_weight,
+                            },
+                            predictions,
+                        )
+                    )
+    return sort_sweep_rows(rows)
+
+
+def run_supervised_sweep(args, items) -> list[dict[str, float | int | str]]:
+    rows: list[dict[str, float | int | str]] = []
+    for threshold in parse_float_list(args.sweep_supervised_thresholds):
+        predictions = classify_supervised.classify(items, threshold)
+        rows.append(build_metric_row("supervised", {"supervised_threshold": threshold}, predictions))
+    return sort_sweep_rows(rows)
+
+
+def print_sweep(rows: list[dict[str, float | int | str]]) -> None:
+    param_keys = sorted(
+        {
+            key
+            for row in rows
+            for key in row
+            if key
+            not in {
+                "strategy",
+                "precision",
+                "recall",
+                "f1",
+                "tp",
+                "fp",
+                "fn",
+                "tn",
+                "predicted_bad",
+            }
+        }
     )
+    columns = [
+        "rank",
+        "strategy",
+        *param_keys,
+        "precision",
+        "recall",
+        "f1",
+        "tp",
+        "fp",
+        "fn",
+        "tn",
+        "predicted_bad",
+    ]
+    print("\t".join(columns))
     for index, row in enumerate(rows, start=1):
-        print(
-            "{rank}\t{threshold:.2f}\t{bad_threshold:.2f}\t{margin:.2f}\t{precision:.4f}\t{recall:.4f}\t{f1:.4f}\t{tp}\t{fp}\t{fn}\t{tn}\t{predicted_bad}".format(
-                rank=index,
-                threshold=row["hybrid_threshold"],
-                bad_threshold=row["hybrid_bad_risk_threshold"],
-                margin=row["good_margin"],
-                precision=row["precision"],
-                recall=row["recall"],
-                f1=row["f1"],
-                tp=row["tp"],
-                fp=row["fp"],
-                fn=row["fn"],
-                tn=row["tn"],
-                predicted_bad=row["predicted_bad"],
-            )
-        )
+        values: list[str] = []
+        for column in columns:
+            if column == "rank":
+                values.append(str(index))
+                continue
+            value = row.get(column, "")
+            if isinstance(value, float):
+                values.append(f"{value:.4f}")
+            else:
+                values.append(str(value))
+        print("\t".join(values))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -169,12 +309,21 @@ def main(argv: list[str] | None = None) -> int:
         print("No trace samples selected.")
         return 0
 
-    if args.sweep_hybrid:
-        rows = run_hybrid_sweep(args, items)
-        print_hybrid_sweep(rows)
+    if args.sweep_all or args.sweep_rule or args.sweep_unsupervised or args.sweep_hybrid or args.sweep_supervised:
+        rows: list[dict[str, float | int | str]] = []
+        if args.sweep_all or args.sweep_rule:
+            rows.extend(run_rule_sweep(args, items))
+        if args.sweep_all or args.sweep_unsupervised:
+            rows.extend(run_unsupervised_sweep(args, items))
+        if args.sweep_all or args.sweep_hybrid:
+            rows.extend(run_hybrid_sweep(args, items))
+        if (args.sweep_all or args.sweep_supervised) and has_supervised_training(items):
+            rows.extend(run_supervised_sweep(args, items))
+        rows = sort_sweep_rows(rows)
+        print_sweep(rows)
         if args.output:
             output = {
-                "strategy": "unsupervised_hybrid_sweep",
+                "strategy": "sweep",
                 "rows": rows,
             }
             Path(args.output).write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")

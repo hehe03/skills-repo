@@ -101,11 +101,32 @@ python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-hybrid
 ```
 
+扫描其它方法：
+
+```powershell
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-rule
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-unsupervised
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-supervised
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-all
+```
+
 自定义扫描范围：
 
 ```powershell
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-hybrid --sweep-hybrid-thresholds 0.45,0.50,0.55 --sweep-hybrid-bad-risk-thresholds 0.50,0.55,0.60,0.65 --sweep-good-margins 0.00,0.05,0.10
 ```
+
+常用扫描参数：
+
+- `--sweep-repeat-thresholds`：rule 的重复/循环阈值。
+- `--sweep-thresholds`：unsupervised 的 score 阈值。
+- `--sweep-bad-risk-thresholds`：unsupervised 的 bad-risk 阈值。
+- `--sweep-bad-risk-weights`：unsupervised 的 bad-risk 权重。
+- `--sweep-centrality-weights`：unsupervised 和 hybrid 的批内中心性权重。
+- `--sweep-hybrid-thresholds`：hybrid 的 good_score 阈值。
+- `--sweep-hybrid-bad-risk-thresholds`：hybrid 的 bad_score 阈值。
+- `--sweep-good-margins`：hybrid 判 badcase 时要求 bad_score 超过 good_score 的边距。
+- `--sweep-supervised-thresholds`：supervised 的 goodcase 阈值。
 
 ## 自动选路策略
 
