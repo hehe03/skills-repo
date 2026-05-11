@@ -146,6 +146,12 @@ python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy supervised
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --output result.json
 ```
 
+扫描 hybrid 阈值：
+
+```powershell
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-hybrid
+```
+
 ## 输出解释
 
 终端默认输出：

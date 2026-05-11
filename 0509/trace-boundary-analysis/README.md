@@ -95,6 +95,18 @@ python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy supervised
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --output result.json
 ```
 
+扫描 hybrid 阈值：
+
+```powershell
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-hybrid
+```
+
+自定义扫描范围：
+
+```powershell
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-hybrid --sweep-hybrid-thresholds 0.45,0.50,0.55 --sweep-hybrid-bad-risk-thresholds 0.50,0.55,0.60,0.65 --sweep-good-margins 0.00,0.05,0.10
+```
+
 ## 自动选路策略
 
 - metadata 中存在可用 `train` 样本，且 `train` 同时包含 `goodcase` 和 `badcase`：使用 `supervised`。
