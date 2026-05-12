@@ -120,9 +120,9 @@ def build_reason(summary: dict[str, Any]) -> str:
 def classify(
     items: list[TraceItem],
     threshold: float = 0.55,
-    bad_risk_threshold: float = 0.55,
-    bad_risk_weight: float = 0.45,
-    centrality_weight: float = 0.10,
+    bad_risk_threshold: float = 0.45,
+    bad_risk_weight: float = 0.60,
+    centrality_weight: float = 0.20,
 ) -> list[Prediction]:
     extracted = []
     for item in items:

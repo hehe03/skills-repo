@@ -16,6 +16,7 @@ trace-boundary-analysis/
 ├── 方法及优化.md
 └── scripts/
     ├── run_trace_analysis.py
+    ├── run_experiments.py
     ├── common.py
     ├── features.py
     ├── classify_rule.py
@@ -24,7 +25,8 @@ trace-boundary-analysis/
     └── classify_supervised.py
 ```
 
-- `run_trace_analysis.py`：统一入口，只负责参数解析、读取输入、自动选路和输出。
+- `run_trace_analysis.py`：基础分析入口，只负责参数解析、读取输入、自动选路和输出。
+- `run_experiments.py`：实验入口，负责规则层级对比、参数 sweep、ensemble sweep，并支持命令行或 config.yaml 加载参数。
 - `common.py`：公共数据结构、trace/metadata 读取、指标统计和结果序列化。
 - `features.py`：公共特征抽取逻辑。
 - `classify_rule.py`：规则法，从 `rules.md` 读取规则配置。
@@ -135,6 +137,7 @@ python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.
 
 ```powershell
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy rule
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy rule --rule-layer trace_format
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy unsupervised
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy unsupervised_hybrid
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy supervised --metadata <metadata.csv>
@@ -146,28 +149,53 @@ python .\scripts\run_trace_analysis.py <trace_json_or_dir> --strategy supervised
 python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --output result.json
 ```
 
+输出误差分析 Markdown：
+
+```powershell
+python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --strategy unsupervised --error-analysis-output error_analysis.md
+```
+
+`--error-analysis-output` 只用于非 sweep 运行，会输出 false positives、false negatives 和 true positives，便于根据具体坏例继续调参或增加规则。
+
 扫描 hybrid 阈值：
 
 ```powershell
-python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-hybrid
+python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-hybrid
 ```
 
 扫描其它方法或一次性扫描全部方法：
 
 ```powershell
-python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-rule
-python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-unsupervised
-python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-supervised
-python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-ensemble
-python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-all
+python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-rule
+python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-unsupervised
+python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-supervised
+python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-ensemble
+python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-all
 ```
 
 `--sweep-ensemble` 会扫描 `rule + unsupervised` 的 OR/AND 组合，用于观察在保持 high precision 时是否能补充 recall。
 
+当前实验 `ensemble_sweep_20260511_172039.md` 显示：`rule + unsupervised` 的 OR/AND 组合没有超过单独 `unsupervised` 的 precision/recall 前沿。默认 `unsupervised` 参数采用当前高 precision 折中点：`--threshold 0.55 --bad-risk-threshold 0.45 --bad-risk-weight 0.60 --centrality-weight 0.20`。
+
 启用 sweep 时会自动生成 Markdown 结果文件，默认在当前目录下，文件名为 `<方法名>_sweep_<YYYYMMDD_HHMMSS>.md`。如需指定目录：
 
 ```powershell
-python .\scripts\run_trace_analysis.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-all --sweep-output-dir .\results
+python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv> --sweep-all --sweep-output-dir .\results
+```
+
+也可以用 config.yaml 驱动实验：
+
+```yaml
+input_path: <trace_json_or_dir>
+metadata: <metadata.csv>
+sweep:
+  rule: true
+  rule_layers: [general, trace_format, domain_prior]
+  repeat_thresholds: [2, 3, 4]
+```
+
+```powershell
+python .\scripts\run_experiments.py --config config.yaml
 ```
 
 ## 输出解释
