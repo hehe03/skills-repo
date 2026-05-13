@@ -34,8 +34,8 @@ description: >-
 2. 可选读取测试 metadata：`--metadata`。
 3. 可选读取训练 trace：`--train-trace-path`，或从 `trace_path` 中用 `--train-split` 选出训练样本。
 4. 可选选择测试 split：`--eval-split`。若不指定，测试 `trace_path` 中全部样本。
-5. 训练阶段根据方法生成规则文件。
-6. 测试阶段加载规则文件，对测试样本输出预测和 Markdown 报告。
+5. 训练阶段先抽取通用特征和动态字段特征，再根据方法生成规则文件。
+6. 测试阶段重新抽取测试样本特征，加载规则文件，对测试样本输出预测和 Markdown 报告。
 
 若既没有 `--train-trace-path`，也没有 `--train-split`，则视为无训练数据，只能使用 `non_llm_no_train` 或 `llm_no_train`。
 
@@ -62,19 +62,28 @@ scripts/rules/
 
 `non_llm_no_train` 不训练，只加载通用规则。通用规则覆盖解析失败、空 trace、无可观察步骤、错误文本、空结果比例高、重复动作、步数过多、存在 final answer 等信号。
 
-`non_llm_unlabeled` 使用无标注训练 trace。它从训练样本抽取特征，对风险特征计算 90 分位阈值，并生成批内异常型 badcase 规则。
+训练阶段不只依赖固定特征表。`features.py` 会同时抽取通用特征和动态字段特征：
 
-`non_llm_labeled` 使用有标注训练 trace。它要求训练集同时包含 `goodcase` 和 `badcase`，比较两类样本特征均值，生成区分性阈值规则。
+- 通用特征：`step_count`、`error_count`、`empty_result_ratio`、`has_final_answer` 等。
+- 动态字段特征：根据 trace 实际字段自动生成，例如 `field_exists:status`、`field_text:status`、`field_nonempty_ratio:plan_list[].result`、`field_number_mean:metrics.score`。
+
+训练方法可以直接把动态字段特征写入规则，因此从训练数据中发现的业务字段、字段取值、字段缺失或字段数值规律，会立即在后续测试中生效。
+
+`non_llm_unlabeled` 使用无标注训练 trace。它从训练样本抽取通用特征和动态字段特征，对风险特征计算 90 分位阈值，并为训练集中高频字段的缺失/为空生成批内异常型 badcase 规则。
+
+`non_llm_labeled` 使用有标注训练 trace。它要求训练集同时包含 `goodcase` 和 `badcase`，比较两类样本的通用特征和动态字段特征，生成区分性阈值、字段出现、字段缺失、字段取值和数值大小规则。
 
 ## LLM 方法
 
-LLM 方法不直接让模型判定每条测试 trace，而是让模型生成可执行 JSON 规则，再交给 `rule_engine.py` 统一测试。
+LLM 方法不直接让模型判定每条测试 trace，而是让模型生成可执行 JSON 规则，再交给 `rule_engine.py` 统一测试。Prompt 会包含训练样本中的动态字段特征；如果 LLM 发现某个业务字段有判别力，应优先用 `field_*:<path>` 特征写成规则，这类规则会立即生效。
 
 LLM 入口在 `scripts/llm_rule_prompt.py`：
 
-- `build_prompt_from_records()` 根据 `no_train`、`unlabeled`、`labeled` 三种场景生成 prompt。
+- `build_prompt_from_records()` 根据 `no_train`、`unlabeled`、`labeled` 三种场景生成 prompt，并提供动态字段特征。
 - `call_llm()` 是预留钩子，默认返回空字符串。选择任一 `llm_*` 方法时，`run_experiments.py` 会默认触发它；若未实现，会报错提示补全。
-- `write_llm_rule_report()` 生成中文 `llm_rule_repoert.md`，说明 LLM 发现了哪些规则和 final-answer 字段。
+- `write_llm_rule_report()` 生成中文 `llm_rule_repoert.md`，说明 LLM 发现了哪些规则、final-answer 字段和建议新增特征。
+
+LLM 输出中的 `proposed_features` 只表示“尚未实现的新计算特征建议”，不会在当前运行中立即执行；使用 `field_exists:<path>`、`field_text:<path>`、`field_number_mean:<path>` 等动态字段特征生成的规则会立即执行。
 
 `call_llm()` 签名：
 

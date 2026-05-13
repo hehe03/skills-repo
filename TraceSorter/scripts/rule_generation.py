@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import statistics
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -17,6 +19,8 @@ NUMERIC_BAD_FEATURES = [
     "empty_result_count",
     "empty_result_ratio",
 ]
+MAX_DYNAMIC_FIELD_RULES = 30
+MAX_DYNAMIC_FIELD_VALUE_CHARS = 80
 
 
 def _percentile(values: List[float], q: float) -> float:
@@ -43,6 +47,216 @@ def _write_rules(path: str | Path, rules: List[Dict[str, Any]]) -> Path:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
         handle.write("\n")
     return output
+
+
+def _safe_rule_id(text: str, max_chars: int = 80) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_]+", "_", text).strip("_").lower()
+    return (cleaned or "field")[:max_chars]
+
+
+def _dynamic_paths(rows: List[Dict[str, Any]]) -> List[str]:
+    paths: set[str] = set()
+    for row in rows:
+        for feature in row:
+            if feature.startswith("field_exists:"):
+                paths.add(feature.split(":", 1)[1])
+    return sorted(paths)
+
+
+def _presence_rate(rows: List[Dict[str, Any]], path: str) -> float:
+    if not rows:
+        return 0.0
+    return sum(1 for row in rows if row.get(f"field_exists:{path}") is True) / len(rows)
+
+
+def _nonempty_rate(rows: List[Dict[str, Any]], path: str) -> float:
+    if not rows:
+        return 0.0
+    values = [float(row.get(f"field_nonempty_ratio:{path}", 0.0)) for row in rows]
+    return statistics.fmean(values) if values else 0.0
+
+
+def _short_text_values(rows: List[Dict[str, Any]], path: str) -> Counter[str]:
+    values: Counter[str] = Counter()
+    feature = f"field_text:{path}"
+    for row in rows:
+        raw = str(row.get(feature, "")).strip()
+        if not raw or "\n" in raw:
+            continue
+        if len(raw) <= MAX_DYNAMIC_FIELD_VALUE_CHARS:
+            values[raw] += 1
+    return values
+
+
+def _number_mean(row: Dict[str, Any], path: str) -> float | None:
+    value = row.get(f"field_number_mean:{path}")
+    if value is None:
+        value = row.get(f"field_number:{path}")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _mean_optional(values: List[float | None]) -> float | None:
+    present = [value for value in values if value is not None]
+    if not present:
+        return None
+    return statistics.fmean(present)
+
+
+def _dynamic_unlabeled_field_rules(feature_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if len(feature_rows) < 3:
+        return []
+    rules: List[Dict[str, Any]] = []
+    for path in _dynamic_paths(feature_rows):
+        if len(rules) >= MAX_DYNAMIC_FIELD_RULES:
+            break
+        presence = _presence_rate(feature_rows, path)
+        nonempty = _nonempty_rate(feature_rows, path)
+        field_id = _safe_rule_id(path)
+        if presence >= 0.80:
+            rules.append(
+                {
+                    "id": f"unlabeled_missing_common_field_{field_id}",
+                    "layer": "unlabeled",
+                    "label": "badcase",
+                    "weight": 0.20,
+                    "description": f"Field `{path}` is common in unlabeled train traces but missing in this trace.",
+                    "all": [{"feature": f"field_exists:{path}", "op": "==", "value": False}],
+                }
+            )
+        if len(rules) >= MAX_DYNAMIC_FIELD_RULES:
+            break
+        if presence >= 0.80 and nonempty >= 0.80:
+            rules.append(
+                {
+                    "id": f"unlabeled_empty_common_field_{field_id}",
+                    "layer": "unlabeled",
+                    "label": "badcase",
+                    "weight": 0.20,
+                    "description": f"Field `{path}` is usually non-empty in unlabeled train traces but empty in this trace.",
+                    "all": [
+                        {"feature": f"field_exists:{path}", "op": "==", "value": True},
+                        {"feature": f"field_nonempty_ratio:{path}", "op": "==", "value": 0.0},
+                    ],
+                }
+            )
+    return rules
+
+
+def _dynamic_labeled_field_rules(good_rows: List[Dict[str, Any]], bad_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rules: List[Dict[str, Any]] = []
+    paths = sorted(set(_dynamic_paths(good_rows)) | set(_dynamic_paths(bad_rows)))
+    for path in paths:
+        if len(rules) >= MAX_DYNAMIC_FIELD_RULES:
+            break
+        good_presence = _presence_rate(good_rows, path)
+        bad_presence = _presence_rate(bad_rows, path)
+        field_id = _safe_rule_id(path)
+        if bad_presence - good_presence >= 0.50:
+            rules.append(
+                {
+                    "id": f"labeled_bad_field_present_{field_id}",
+                    "layer": "labeled",
+                    "label": "badcase",
+                    "weight": 0.30,
+                    "description": f"Field `{path}` appears much more often in labeled badcase train traces.",
+                    "all": [{"feature": f"field_exists:{path}", "op": "==", "value": True}],
+                }
+            )
+        elif good_presence - bad_presence >= 0.50:
+            rules.append(
+                {
+                    "id": f"labeled_good_field_present_{field_id}",
+                    "layer": "labeled",
+                    "label": "goodcase",
+                    "weight": 0.25,
+                    "description": f"Field `{path}` appears much more often in labeled goodcase train traces.",
+                    "all": [{"feature": f"field_exists:{path}", "op": "==", "value": True}],
+                }
+            )
+            rules.append(
+                {
+                    "id": f"labeled_bad_missing_good_field_{field_id}",
+                    "layer": "labeled",
+                    "label": "badcase",
+                    "weight": 0.25,
+                    "description": f"Field `{path}` is common in goodcase train traces but often absent from badcase traces.",
+                    "all": [{"feature": f"field_exists:{path}", "op": "==", "value": False}],
+                }
+            )
+
+        if len(rules) >= MAX_DYNAMIC_FIELD_RULES:
+            break
+        bad_values = _short_text_values(bad_rows, path)
+        good_values = _short_text_values(good_rows, path)
+        for value, bad_count in bad_values.most_common(5):
+            bad_rate = bad_count / len(bad_rows)
+            good_rate = good_values.get(value, 0) / len(good_rows)
+            if bad_rate - good_rate >= 0.50:
+                rules.append(
+                    {
+                        "id": f"labeled_bad_value_{field_id}_{_safe_rule_id(value, 32)}",
+                        "layer": "labeled",
+                        "label": "badcase",
+                        "weight": 0.35,
+                        "description": f"Value `{value}` in field `{path}` is much more common in badcase train traces.",
+                        "all": [{"feature": f"field_text:{path}", "op": "contains", "value": value}],
+                    }
+                )
+                break
+        if len(rules) >= MAX_DYNAMIC_FIELD_RULES:
+            break
+        for value, good_count in good_values.most_common(5):
+            good_rate = good_count / len(good_rows)
+            bad_rate = bad_values.get(value, 0) / len(bad_rows)
+            if good_rate - bad_rate >= 0.50:
+                rules.append(
+                    {
+                        "id": f"labeled_good_value_{field_id}_{_safe_rule_id(value, 32)}",
+                        "layer": "labeled",
+                        "label": "goodcase",
+                        "weight": 0.30,
+                        "description": f"Value `{value}` in field `{path}` is much more common in goodcase train traces.",
+                        "all": [{"feature": f"field_text:{path}", "op": "contains", "value": value}],
+                    }
+                )
+                break
+
+        good_mean = _mean_optional([_number_mean(row, path) for row in good_rows])
+        bad_mean = _mean_optional([_number_mean(row, path) for row in bad_rows])
+        if good_mean is None or bad_mean is None:
+            continue
+        gap = abs(bad_mean - good_mean)
+        if gap < max(1.0, abs(good_mean) * 0.10, abs(bad_mean) * 0.10):
+            continue
+        threshold = round((good_mean + bad_mean) / 2.0, 4)
+        if bad_mean > good_mean:
+            rules.append(
+                {
+                    "id": f"labeled_bad_high_field_number_{field_id}",
+                    "layer": "labeled",
+                    "label": "badcase",
+                    "weight": 0.30,
+                    "description": f"Numeric field `{path}` is higher in badcase train traces.",
+                    "all": [{"feature": f"field_number_mean:{path}", "op": ">=", "value": threshold}],
+                }
+            )
+        else:
+            rules.append(
+                {
+                    "id": f"labeled_good_high_field_number_{field_id}",
+                    "layer": "labeled",
+                    "label": "goodcase",
+                    "weight": 0.25,
+                    "description": f"Numeric field `{path}` is higher in goodcase train traces.",
+                    "all": [{"feature": f"field_number_mean:{path}", "op": ">=", "value": threshold}],
+                }
+            )
+    return rules[:MAX_DYNAMIC_FIELD_RULES]
 
 
 def generate_unlabeled_rules(
@@ -86,6 +300,7 @@ def generate_unlabeled_rules(
                 ],
             }
         )
+    rules.extend(_dynamic_unlabeled_field_rules(feature_rows))
     _write_rules(output_path, rules)
     return rules
 
@@ -162,5 +377,6 @@ def generate_labeled_rules(
             }
         )
 
+    rules.extend(_dynamic_labeled_field_rules(good_rows, bad_rows))
     _write_rules(output_path, rules)
     return rules

@@ -47,6 +47,15 @@ def condition_matches(features: Dict[str, Any], condition: Dict[str, Any]) -> bo
     op = condition.get("op", "==")
     expected = condition.get("value")
     actual = features.get(feature)
+    if actual is None and isinstance(feature, str):
+        if feature.startswith("field_exists:"):
+            actual = False
+        elif feature.startswith("field_text:"):
+            actual = ""
+        elif feature.startswith("field_count:"):
+            actual = 0
+        elif feature.startswith("field_nonempty_ratio:"):
+            actual = 0.0
 
     if op == "truthy":
         return bool(actual)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
@@ -33,6 +33,7 @@ DEFAULT_ASSISTANT_ROLES = {"assistant"}
 DEFAULT_ASSISTANT_CONTENT_KEYS = {"content"}
 ACTION_KEYS = {"tool", "tool_name", "name", "action", "operation", "task_name"}
 RESULT_KEYS = {"result", "output", "observation", "content", "response", "final_answer"}
+MAX_DYNAMIC_FIELD_TEXT = 4000
 
 
 @dataclass(frozen=True)
@@ -240,6 +241,73 @@ def _all_strings(trace: Any) -> List[str]:
     return strings
 
 
+def _field_path_segment(key: Any) -> str:
+    text = str(key).strip()
+    text = re.sub(r"\s+", "_", text)
+    return text or "empty_key"
+
+
+def _flatten_leaf_fields(value: Any, path: str = "") -> Iterable[tuple[str, Any]]:
+    if isinstance(value, dict):
+        if not value and path:
+            yield path, ""
+        for key, child in value.items():
+            segment = _field_path_segment(key)
+            next_path = f"{path}.{segment}" if path else segment
+            yield from _flatten_leaf_fields(child, next_path)
+        return
+    if isinstance(value, list):
+        if not value and path:
+            yield path, ""
+        next_path = f"{path}[]" if path else "[]"
+        for child in value:
+            yield from _flatten_leaf_fields(child, next_path)
+        return
+    if path:
+        yield path, value
+
+
+def _dynamic_field_features(trace: Any) -> Dict[str, Any]:
+    values_by_path: Dict[str, List[Any]] = defaultdict(list)
+    for path, value in _flatten_leaf_fields(trace):
+        values_by_path[path].append(value)
+
+    features: Dict[str, Any] = {
+        "trace_field_paths": "\n".join(sorted(values_by_path)),
+    }
+    for path, values in values_by_path.items():
+        texts = [_stringify(value, limit=500).strip() for value in values]
+        nonempty_texts = [text for text in texts if text]
+        features[f"field_exists:{path}"] = True
+        features[f"field_count:{path}"] = len(values)
+        features[f"field_text:{path}"] = "\n".join(nonempty_texts)[:MAX_DYNAMIC_FIELD_TEXT]
+        features[f"field_nonempty_ratio:{path}"] = round(len(nonempty_texts) / len(values), 4) if values else 0.0
+
+        numbers: List[float] = []
+        for value in values:
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                numbers.append(float(value))
+            else:
+                try:
+                    numbers.append(float(str(value)))
+                except (TypeError, ValueError):
+                    pass
+        if numbers and len(numbers) == len(values):
+            features[f"field_number_min:{path}"] = min(numbers)
+            features[f"field_number_max:{path}"] = max(numbers)
+            features[f"field_number_mean:{path}"] = round(sum(numbers) / len(numbers), 4)
+            if len(numbers) == 1:
+                features[f"field_number:{path}"] = numbers[0]
+
+        bools = [value for value in values if isinstance(value, bool)]
+        if bools and len(bools) == len(values):
+            features[f"field_bool_true_ratio:{path}"] = round(sum(1 for value in bools if value) / len(bools), 4)
+
+    return features
+
+
 def _candidate_steps(trace: Any) -> List[Dict[str, Any]]:
     steps: List[Dict[str, Any]] = []
 
@@ -427,7 +495,7 @@ def extract_features(
     max_consecutive_same_action = _max_consecutive(actions)
     unique_action_ratio = len(action_counts) / step_count if step_count else 0.0
 
-    return {
+    features = {
         "parse_error": parse_error,
         "is_empty_trace": not bool(trace) or trace == [] or trace == {},
         "has_steps": step_count > 0,
@@ -453,3 +521,5 @@ def extract_features(
         "source": record.source or "",
         "split": record.split or "",
     }
+    features.update(_dynamic_field_features(trace))
+    return features

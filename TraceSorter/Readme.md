@@ -10,7 +10,7 @@
 代码流程上明确分为两阶段：
 
 ```text
-训练阶段：读取训练 trace -> 生成规则文件
+训练阶段：读取训练 trace -> 抽取通用特征和动态字段特征 -> 生成规则文件
 测试阶段：读取测试 trace -> 加载规则文件 -> 输出预测和报告
 ```
 
@@ -52,11 +52,11 @@ TraceSorter/
 | 方法 | 方法族 | 训练输入场景 | 训练阶段做什么 | 测试阶段加载什么 |
 |---|---|---|---|---|
 | `non_llm_no_train` | 非 LLM | 无训练数据 | 不训练 | `static/general_rules.json` |
-| `non_llm_unlabeled` | 非 LLM | 无标注 trace | 从训练 trace 的特征分布生成异常阈值规则 | 通用规则 + `dynamic/non_llm/unlabeled_rules.json` |
-| `non_llm_labeled` | 非 LLM | 有标注 trace | 比较 train 中 goodcase/badcase 的特征差异，生成区分规则 | 通用规则 + `dynamic/non_llm/labeled_rules.json` |
-| `llm_no_train` | LLM | 无训练数据 | 让 LLM 根据特征说明生成保守通用候选规则 | 通用规则 + `dynamic/llm/no_train_rules.json` |
-| `llm_unlabeled` | LLM | 无标注 trace | 让 LLM 阅读无标注训练样本特征，生成异常型候选规则 | 通用规则 + `dynamic/llm/unlabeled_rules.json` |
-| `llm_labeled` | LLM | 有标注 trace | 让 LLM 阅读带标签训练样本特征，生成区分 good/bad 的候选规则 | 通用规则 + `dynamic/llm/labeled_rules.json` |
+| `non_llm_unlabeled` | 非 LLM | 无标注 trace | 从通用特征和动态字段特征中生成异常阈值规则 | 通用规则 + `dynamic/non_llm/unlabeled_rules.json` |
+| `non_llm_labeled` | 非 LLM | 有标注 trace | 比较 train 中 goodcase/badcase 的通用特征和字段特征差异，生成区分规则 | 通用规则 + `dynamic/non_llm/labeled_rules.json` |
+| `llm_no_train` | LLM | 无训练数据 | 让 LLM 根据通用特征说明生成保守通用候选规则 | 通用规则 + `dynamic/llm/no_train_rules.json` |
+| `llm_unlabeled` | LLM | 无标注 trace | 让 LLM 阅读无标注训练样本的通用特征和动态字段特征，生成异常型候选规则 | 通用规则 + `dynamic/llm/unlabeled_rules.json` |
+| `llm_labeled` | LLM | 有标注 trace | 让 LLM 阅读带标签训练样本的通用特征和动态字段特征，生成区分 good/bad 的候选规则 | 通用规则 + `dynamic/llm/labeled_rules.json` |
 
 旧方法名兼容：
 
@@ -76,13 +76,14 @@ flowchart TD
     T["训练 trace: --train-trace-path 或 --train-split"] --> C["读取训练集"]
     TM["训练 metadata: --train-metadata 或 --metadata"] --> C
     B --> D["确定测试样本: --eval-split 或全部"]
-    C --> E{"选择方法"}
+    C --> X["抽取训练特征表<br/>通用特征 + 动态字段特征<br/>无训练时为空"]
+    X --> E{"选择方法"}
     E -->|non_llm_no_train| F["无训练阶段<br/>加载静态通用规则"]
-    E -->|non_llm_unlabeled| G["非 LLM 无标注训练<br/>分位数/异常阈值规则"]
-    E -->|non_llm_labeled| H["非 LLM 有标注训练<br/>good/bad 特征差异规则"]
+    E -->|non_llm_unlabeled| G["非 LLM 无标注训练<br/>分位数/字段异常规则"]
+    E -->|non_llm_labeled| H["非 LLM 有标注训练<br/>good/bad 特征和字段差异规则"]
     E -->|llm_no_train| I["LLM 无训练<br/>基于特征说明生成规则"]
-    E -->|llm_unlabeled| J["LLM 无标注训练<br/>基于样本特征生成异常规则"]
-    E -->|llm_labeled| K["LLM 有标注训练<br/>基于标签差异生成规则"]
+    E -->|llm_unlabeled| J["LLM 无标注训练<br/>基于样本字段和特征生成异常规则"]
+    E -->|llm_labeled| K["LLM 有标注训练<br/>基于标签差异和业务字段生成规则"]
     F --> L["规则引擎测试"]
     G --> L
     H --> L
@@ -126,6 +127,22 @@ case_002.json,badcase,eval_a,test
 
 `label` 支持 `goodcase`、`badcase`，也兼容 `good`、`bad` 等别名。
 
+## 特征与规则边界
+
+当前项目不再只依赖一张固定特征表。训练阶段会先抽取两类特征：
+
+1. **通用特征**：由 `features.py` 固定实现，例如 `step_count`、`error_count`、`empty_result_ratio`、`has_final_answer`。
+2. **动态字段特征**：由 `features.py` 自动遍历 trace 实际字段生成，例如：
+   - `field_exists:status`
+   - `field_text:status`
+   - `field_nonempty_ratio:plan_list[].result`
+   - `field_number_mean:metrics.score`
+   - `field_bool_true_ratio:flags.completed`
+
+规则生成方法可以直接使用这些动态字段特征。因此，如果训练数据中发现某个业务字段、字段取值、字段缺失或数值大小与 good/bad 有关系，生成的规则会立刻写入动态规则文件，并在同一次测试阶段生效。
+
+LLM 方法还可以输出 `proposed_features`。这类是真正“尚未实现的新计算特征”建议，只会进入报告，不会在当前运行中立即生效；如果 LLM 使用的是 `field_*:<path>` 这类动态字段特征，则会立即生效。
+
 ## 非 LLM 方法
 
 ### non_llm_no_train
@@ -147,11 +164,12 @@ case_002.json,badcase,eval_a,test
 
 流程：
 
-1. 对训练 trace 抽取通用特征。
+1. 对训练 trace 抽取通用特征和动态字段特征。
 2. 对风险特征计算 90 分位阈值。
-3. 生成“相对当前训练样本异常”的 badcase 规则。
-4. 如果训练样本中存在可采用的 final-answer 字段，则生成缺失 final answer 的风险规则。
-5. 写入 `scripts/rules/dynamic/non_llm/unlabeled_rules.json`。
+3. 对训练集中高频、非空的业务字段生成“字段缺失/字段为空”异常规则。
+4. 生成“相对当前训练样本异常”的 badcase 规则。
+5. 如果训练样本中存在可采用的 final-answer 字段，则生成缺失 final answer 的风险规则。
+6. 写入 `scripts/rules/dynamic/non_llm/unlabeled_rules.json`。
 
 这类规则适合发现批内离群样本，不应被理解为跨业务永久阈值。
 
@@ -163,10 +181,11 @@ case_002.json,badcase,eval_a,test
 
 1. 只使用训练集中带 `goodcase` / `badcase` 标签的样本。
 2. 要求训练集同时包含 goodcase 和 badcase。
-3. 分别计算两类样本的特征均值。
-4. 如果某个风险特征在 badcase 中显著更高，则生成 badcase 阈值规则。
-5. 如果 final answer 在 goodcase 中明显更常见，则生成 goodcase 支持规则和 missing-final 风险规则。
-6. 写入 `scripts/rules/dynamic/non_llm/labeled_rules.json`。
+3. 分别计算两类样本的通用特征均值。
+4. 比较动态字段特征：字段是否出现、字段是否缺失、短文本取值、数值大小是否与 good/bad 明显相关。
+5. 如果某个风险特征或字段信号在 badcase 中显著更高，则生成 badcase 阈值或字段规则。
+6. 如果 final answer 在 goodcase 中明显更常见，则生成 goodcase 支持规则和 missing-final 风险规则。
+7. 写入 `scripts/rules/dynamic/non_llm/labeled_rules.json`。
 
 ## LLM 方法
 
@@ -174,9 +193,9 @@ LLM 方法不是让模型直接给每条 trace 判标签，而是让模型生成
 
 LLM 方法使用 `scripts/llm_rule_prompt.py`：
 
-- `build_prompt_from_records()` 根据训练场景生成 prompt。
+- `build_prompt_from_records()` 根据训练场景生成 prompt，并把训练样本中的动态字段特征一并提供给 LLM。
 - `call_llm()` 是预留钩子，默认返回空字符串，需要你按自己的 provider 实现。
-- `write_llm_rule_report()` 输出中文 `llm_rule_repoert.md`，说明 LLM 发现了哪些规则、是否发现 final-answer 字段。
+- `write_llm_rule_report()` 输出中文 `llm_rule_repoert.md`，说明 LLM 发现了哪些规则、是否发现 final-answer 字段、是否提出新特征。
 
 `call_llm()` 签名：
 

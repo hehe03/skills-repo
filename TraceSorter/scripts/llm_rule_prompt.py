@@ -34,6 +34,15 @@ FEATURE_DESCRIPTIONS = {
     "final_answer_chars": "Approximate final answer character count.",
     "final_answer_source": "Where final answer detection matched, such as top_level:final_answer or assistant:content.",
     "text_chars": "Total visible trace text characters.",
+    "trace_field_paths": "Newline-separated normalized leaf field paths observed in the trace.",
+    "field_exists:<path>": "Dynamic field feature. True when the normalized trace field path exists.",
+    "field_count:<path>": "Dynamic field feature. Number of leaf values found at this path.",
+    "field_text:<path>": "Dynamic field feature. Joined text values found at this path.",
+    "field_nonempty_ratio:<path>": "Dynamic field feature. Non-empty value ratio for this path.",
+    "field_number_mean:<path>": "Dynamic field feature. Mean numeric value for this path when all values are numeric.",
+    "field_number_min:<path>": "Dynamic field feature. Minimum numeric value for this path when all values are numeric.",
+    "field_number_max:<path>": "Dynamic field feature. Maximum numeric value for this path when all values are numeric.",
+    "field_bool_true_ratio:<path>": "Dynamic field feature. True ratio for this path when all values are boolean.",
 }
 
 
@@ -244,11 +253,13 @@ def build_prompt_from_records(
         "unlabeled": [
             "Training traces are unlabeled.",
             "Generate anomaly-style rules from feature distributions.",
+            "Use dynamic field features when a concrete trace field appears informative.",
             "Use lower weights for cohort-relative risk rules.",
         ],
         "labeled": [
             "Training traces are labeled as goodcase or badcase.",
             "Prefer rules that separate labeled badcase from labeled goodcase.",
+            "Actively inspect dynamic field features such as field_text:<path>, field_exists:<path>, and field_number_mean:<path>.",
             "Do not memorize file names, source names, or split names.",
         ],
     }
@@ -267,7 +278,9 @@ def build_prompt_from_records(
             "Goal:",
             "- Classify traces as goodcase or badcase.",
             "- Prefer conservative, interpretable rules.",
-            "- Use only allowed feature names unless you propose a new feature in `proposed_features`.",
+            "- Use fixed feature names and any dynamic field feature names present in the training feature rows.",
+            "- Dynamic field rules are immediately executable if their feature names follow the field_*:<path> convention.",
+            "- If a useful signal cannot be expressed with existing fixed or dynamic field features, describe it in `proposed_features`; such proposed features are not executable until implemented.",
             "- Also judge whether these traces expose a business final-answer field. If yes, include `final_answer_config` with `evidence_source: \"llm\"`.",
             "",
             "Allowed operators:",
