@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 from typing import Any, Dict, List
 
-from features import extract_features
+from features import discover_default_final_answer_config, extract_features, load_final_answer_config
 from reporting import default_report_path, write_report
 from rule_engine import classify_features, load_rules
 from rule_generation import generate_labeled_rules, generate_unlabeled_rules
@@ -39,6 +39,10 @@ def maybe_generate_rules(args: argparse.Namespace, records: List[TraceRecord]) -
     generated: List[str] = []
     fit_records = _fit_records(records)
     labeled_fit = records_with_labels(fit_records)
+    final_answer_config = discover_default_final_answer_config(
+        fit_records,
+        load_final_answer_config(args.final_answer_config, args.final_answer_keys),
+    )
 
     do_unlabeled = mode in {"unlabeled", "both"} or (
         mode == "auto" and args.rule_layer in {"unlabeled", "all"} and len(fit_records) >= 3
@@ -48,10 +52,10 @@ def maybe_generate_rules(args: argparse.Namespace, records: List[TraceRecord]) -
     )
 
     if do_unlabeled:
-        generate_unlabeled_rules(fit_records, UNLABELED_RULES)
+        generate_unlabeled_rules(fit_records, UNLABELED_RULES, final_answer_config)
         generated.append(str(UNLABELED_RULES))
     if do_labeled:
-        generate_labeled_rules(labeled_fit, LABELED_RULES)
+        generate_labeled_rules(labeled_fit, LABELED_RULES, final_answer_config)
         generated.append(str(LABELED_RULES))
     return generated
 
@@ -76,10 +80,14 @@ def run_experiment(args: argparse.Namespace) -> Path:
     maybe_generate_rules(args, records)
     rules = load_rules(rule_paths_for_layer(args.rule_layer))
     eval_records = _eval_records(records)
+    final_answer_config = discover_default_final_answer_config(
+        records,
+        load_final_answer_config(args.final_answer_config, args.final_answer_keys),
+    )
 
     results: List[Dict[str, Any]] = []
     for record in eval_records:
-        features = extract_features(record)
+        features = extract_features(record, final_answer_config)
         prediction = classify_features(
             features,
             rules,
@@ -93,6 +101,12 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 "label": record.label,
                 "source": record.source,
                 "split": record.split,
+                "has_final_answer": features["has_final_answer"],
+                "final_answer_source": features["final_answer_source"],
+                "final_answer_evidence_enabled": features["final_answer_evidence_enabled"],
+                "final_answer_evidence_strength": features["final_answer_evidence_strength"],
+                "final_answer_evidence_source": features["final_answer_evidence_source"],
+                "final_answer_adopted_fields": features["final_answer_adopted_fields"],
                 **prediction,
             }
         )
@@ -117,9 +131,14 @@ def _predict_records(
     aggregation: str,
 ) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
+    final_answer_config = discover_default_final_answer_config(
+        records,
+        load_final_answer_config(args.final_answer_config, args.final_answer_keys),
+    )
     for record in records:
+        features = extract_features(record, final_answer_config)
         prediction = classify_features(
-            extract_features(record),
+            features,
             rules,
             bad_threshold=args.bad_threshold,
             good_threshold=args.good_threshold,
@@ -131,6 +150,12 @@ def _predict_records(
                 "label": record.label,
                 "source": record.source,
                 "split": record.split,
+                "has_final_answer": features["has_final_answer"],
+                "final_answer_source": features["final_answer_source"],
+                "final_answer_evidence_enabled": features["final_answer_evidence_enabled"],
+                "final_answer_evidence_strength": features["final_answer_evidence_strength"],
+                "final_answer_evidence_source": features["final_answer_evidence_source"],
+                "final_answer_adopted_fields": features["final_answer_adopted_fields"],
                 **prediction,
             }
         )
@@ -188,8 +213,8 @@ def run_general_method_comparison(args: argparse.Namespace) -> Path:
         [
             "## 预测差异",
             "",
-            "| name | label | weighted | capped | weighted_score | capped_score | weighted_reason | capped_reason |",
-            "|---|---|---|---|---:|---:|---|---|",
+            "| name | label | weighted | capped | weighted_score | capped_score | final_answer_policy | final_answer_source | weighted_reason | capped_reason |",
+            "|---|---|---|---|---:|---:|---|---|---|---|",
         ]
     )
     capped_by_name = {row["name"]: row for row in capped}
@@ -200,16 +225,22 @@ def run_general_method_comparison(args: argparse.Namespace) -> Path:
             continue
         weighted_reason = str(row["reason"]).replace("|", "\\|")
         capped_reason = str(other["reason"]).replace("|", "\\|")
+        final_policy = (
+            f"{row['final_answer_evidence_source']}/"
+            f"{row['final_answer_evidence_strength']}:"
+            f"{row['final_answer_adopted_fields'] or 'none'}"
+        )
         lines.append(
             f"| `{row['name']}` | {row.get('label') or ''} | {row['predicted_label']} | "
             f"{other['predicted_label']} | {row['bad_score']} | {other['bad_score']} | "
+            f"{final_policy} | {row['final_answer_source'] or 'none'} | "
             f"{weighted_reason} | {capped_reason} |"
         )
         shown += 1
         if shown >= args.max_rows:
             break
     if shown == 0:
-        lines.append("| none | | | | | | 两种方法预测完全一致，或未显示相同预测 | |")
+        lines.append("| none | | | | | | | | 两种方法预测完全一致，或未显示相同预测 | |")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return output_path
@@ -257,6 +288,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=".", help="Directory for timestamped Markdown reports.")
     parser.add_argument("--output", help="Explicit Markdown output path. Overrides method+time naming.")
     parser.add_argument("--max-rows", type=int, default=200)
+    parser.add_argument(
+        "--final-answer-config",
+        help="Optional JSON config for business-specific final answer detection.",
+    )
+    parser.add_argument(
+        "--final-answer-keys",
+        help="Comma-separated business-specific final answer keys added to top-level and nested detection.",
+    )
     return parser
 
 

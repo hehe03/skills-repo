@@ -1,0 +1,25 @@
+{
+  "top_level_keys": [
+    "final",
+    "final_answer",
+    "final_response",
+    "answer",
+    "response",
+    "output",
+    "result"
+  ],
+  "nested_keys": [
+    "final_answer",
+    "final_response",
+    "answer"
+  ],
+  "assistant_roles": [
+    "assistant"
+  ],
+  "assistant_content_keys": [
+    "content"
+  ],
+  "min_chars": 1,
+  "evidence_source": "user",
+  "note": "Configure business-specific final answer fields here. No long free-text fallback is used."
+}

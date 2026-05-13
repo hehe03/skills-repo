@@ -36,6 +36,67 @@ name,label,source,split
 
 默认不调用 LLM 生成规则。若需要引入 LLM，可让 LLM 读样例后产出同一 JSON schema 的候选规则，再人工审查后写入动态规则文件。
 
+## 最终回答识别机制
+
+`has_final_answer` 不再使用“trace 中存在长度大于等于 80 的字符串”这类宽松兜底。它先确定本次运行是否采用 final-answer 字段，再决定相关规则是否参与分类。
+
+顶层字段和内部字段的区别：
+
+- **顶层字段**：只检查 trace 根对象直接拥有的字段，例如 `trace["final_answer"]`。它更适合作为业务最终结果字段，误判风险较低。
+- **内部字段**：递归检查 trace 任意内部节点中的字段，例如某个 step、message、event 里的 `answer`。它覆盖面更广，但可能命中中间工具结果，误判风险更高。
+
+证据强度规则：
+
+1. 如果用户通过 `--final-answer-keys` 或 `--final-answer-config` 指定字段，则该字段作为强证据，`final_answer_evidence_strength=strong`。
+2. 如果用户没有指定字段，脚本会先扫描输入 trace，检查可见字段是否命中默认候选字段。命中后采用这些字段作为中等强度证据，`final_answer_evidence_strength=medium`。
+3. 如果是 LLM 方法，可以让大模型先判断能否找到业务 final-answer 字段，并将字段写入配置，设置 `evidence_source=llm`。这类字段也作为中等强度证据。
+4. 如果没有用户指定、没有默认命中、也没有 LLM 发现，则 `has_final_answer` 不作为 good/bad 判定证据，相关规则不会命中。
+
+默认候选来源：
+
+1. 顶层字段候选：`final`、`final_answer`、`final_response`、`answer`、`response`、`output`、`result`。
+2. 内部字段候选：`final_answer`、`final_response`、`answer`。
+3. assistant 消息候选：`role=assistant` 且 `content` 非空。
+
+业务相关字段通过配置加入，不要改硬编码。默认配置模板位于：
+
+```text
+scripts/rules/static/final_answer_config.json
+```
+
+快速添加业务字段：
+
+```powershell
+python .\scripts\run_experiments.py <trace_json_or_dir> --final-answer-keys business_result,summary_text
+```
+
+使用完整配置：
+
+```powershell
+python .\scripts\run_experiments.py <trace_json_or_dir> --final-answer-config .\final_answer_config.json
+```
+
+配置示例：
+
+```json
+{
+  "top_level_keys": ["final_answer", "business_result"],
+  "nested_keys": ["final_answer", "business_result", "summary_text"],
+  "assistant_roles": ["assistant"],
+  "assistant_content_keys": ["content"],
+  "min_chars": 1,
+  "evidence_source": "user"
+}
+```
+
+输出中会明确包含 `final_answer_policy` 和 `final_answer_source`。例如：
+
+```text
+user/strong:business_result
+default/medium:top_level:final_answer,nested:answer
+none/none:none
+```
+
 ## 两种通用规则汇聚方法
 
 通用规则层支持两种无监督 baseline，用于比较规则权重/阈值设计是否稳健：
@@ -97,6 +158,8 @@ python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv
 - `--max-rows`：Markdown 报告中最多展示的样本行数。
 - `--aggregation`：规则汇聚方法，取 `weighted` 或 `group_capped`。
 - `--compare-general-methods`：一次比较两种通用规则方法。
+- `--final-answer-keys`：追加业务相关最终回答字段，多个字段用逗号分隔。
+- `--final-answer-config`：使用 JSON 配置控制最终回答识别。
 
 ## 输出
 

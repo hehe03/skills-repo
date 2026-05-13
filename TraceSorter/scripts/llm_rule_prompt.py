@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from features import extract_features
+from features import discover_default_final_answer_config, extract_features, load_final_answer_config
 from trace_io import load_records
 
 
@@ -24,18 +24,27 @@ FEATURE_DESCRIPTIONS = {
     "empty_result_ratio": "Empty result count divided by step_count.",
     "nonempty_result_ratio": "Non-empty result ratio.",
     "has_final_answer": "Whether a final answer/final response is visible.",
+    "final_answer_evidence_enabled": "Whether final answer evidence is enabled for this run.",
+    "final_answer_evidence_strength": "Evidence strength: strong for user-configured fields, medium for default/LLM-discovered fields, none if disabled.",
+    "final_answer_evidence_source": "How final answer fields were selected: user, default, llm, or none.",
+    "final_answer_adopted_fields": "Comma-separated fields adopted as final answer evidence for this run.",
     "final_answer_chars": "Approximate final answer character count.",
+    "final_answer_source": "Where final answer detection matched, such as top_level:final_answer or assistant:content.",
     "text_chars": "Total visible trace text characters.",
 }
 
 
 def build_prompt(args: argparse.Namespace) -> str:
     records = load_records(args.trace_path, args.metadata)
+    final_answer_config = discover_default_final_answer_config(
+        records,
+        load_final_answer_config(args.final_answer_config, args.final_answer_keys),
+    )
     if args.split:
         records = [record for record in records if (record.split or "") == args.split]
     rows: List[Dict[str, Any]] = []
     for record in records[: args.max_samples]:
-        features = extract_features(record)
+        features = extract_features(record, final_answer_config)
         rows.append(
             {
                 "name": record.name,
@@ -74,6 +83,7 @@ def build_prompt(args: argparse.Namespace) -> str:
             "- Avoid rules that memorize file names, source names, or split names.",
             "- For labeled samples, prefer rules that separate badcase from goodcase.",
             "- For unlabeled samples, prefer anomaly-style risk rules and mark them with lower weights.",
+            "- Also judge whether these traces expose a business final-answer field. If yes, include a `final_answer_config` object with `evidence_source: \"llm\"`, candidate top-level/nested keys, and a short rationale.",
             "",
             "Allowed operators:",
             "`==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `regex`, `truthy`, `falsey`",
@@ -83,6 +93,23 @@ def build_prompt(args: argparse.Namespace) -> str:
             "",
             "Rule JSON schema:",
             json.dumps(schema, ensure_ascii=False, indent=2),
+            "",
+            "Optional final-answer config schema:",
+            json.dumps(
+                {
+                    "final_answer_config": {
+                        "top_level_keys": ["business_result"],
+                        "nested_keys": ["business_result", "summary_text"],
+                        "assistant_roles": ["assistant"],
+                        "assistant_content_keys": ["content"],
+                        "min_chars": 1,
+                        "evidence_source": "llm",
+                        "rationale": "Why these fields appear to represent final answers.",
+                    }
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             "",
             "Sample feature rows:",
             json.dumps(rows, ensure_ascii=False, indent=2),
@@ -101,6 +128,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split", choices=["train", "test"], help="Optional split filter for examples.")
     parser.add_argument("--max-samples", type=int, default=30, help="Maximum feature rows included in the prompt.")
     parser.add_argument("--output", help="Optional prompt Markdown output path.")
+    parser.add_argument(
+        "--final-answer-config",
+        help="Optional JSON config for business-specific final answer detection.",
+    )
+    parser.add_argument(
+        "--final-answer-keys",
+        help="Comma-separated business-specific final answer keys added to top-level and nested detection.",
+    )
     return parser
 
 

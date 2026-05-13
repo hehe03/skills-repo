@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from features import extract_features
+from features import discover_default_final_answer_config, extract_features, load_final_answer_config
 from rule_engine import classify_features, load_rules
 from trace_io import load_records
 
@@ -31,9 +31,13 @@ def rule_paths_for_layer(layer: str) -> List[Path]:
 def classify_records(args: argparse.Namespace) -> List[Dict[str, Any]]:
     records = load_records(args.trace_path, args.metadata)
     rules = load_rules(rule_paths_for_layer(args.rule_layer))
+    final_answer_config = discover_default_final_answer_config(
+        records,
+        load_final_answer_config(args.final_answer_config, args.final_answer_keys),
+    )
     results: List[Dict[str, Any]] = []
     for record in records:
-        features = extract_features(record)
+        features = extract_features(record, final_answer_config)
         prediction = classify_features(
             features,
             rules,
@@ -48,6 +52,12 @@ def classify_records(args: argparse.Namespace) -> List[Dict[str, Any]]:
                 "label": record.label,
                 "source": record.source,
                 "split": record.split,
+                "has_final_answer": features["has_final_answer"],
+                "final_answer_source": features["final_answer_source"],
+                "final_answer_evidence_enabled": features["final_answer_evidence_enabled"],
+                "final_answer_evidence_strength": features["final_answer_evidence_strength"],
+                "final_answer_evidence_source": features["final_answer_evidence_source"],
+                "final_answer_adopted_fields": features["final_answer_adopted_fields"],
                 **prediction,
             }
         )
@@ -73,6 +83,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="How to combine matched rule weights.",
     )
     parser.add_argument("--output", help="Optional JSON output path.")
+    parser.add_argument(
+        "--final-answer-config",
+        help="Optional JSON config for business-specific final answer detection.",
+    )
+    parser.add_argument(
+        "--final-answer-keys",
+        help="Comma-separated business-specific final answer keys added to top-level and nested detection.",
+    )
     return parser
 
 
@@ -81,11 +99,20 @@ def main() -> None:
     results = classify_records(args)
     if args.output:
         Path(args.output).write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print("name\tlabel\tpredicted_label\tbad_score\tgood_score\treason")
+    print(
+        "name\tlabel\tpredicted_label\tbad_score\tgood_score\t"
+        "final_answer_policy\tfinal_answer_source\treason"
+    )
     for row in results:
+        final_policy = (
+            f"{row['final_answer_evidence_source']}/"
+            f"{row['final_answer_evidence_strength']}:"
+            f"{row['final_answer_adopted_fields'] or 'none'}"
+        )
         print(
             f"{row['name']}\t{row.get('label') or ''}\t{row['predicted_label']}\t"
-            f"{row['bad_score']}\t{row['good_score']}\t{row['reason']}"
+            f"{row['bad_score']}\t{row['good_score']}\t{final_policy}\t"
+            f"{row['final_answer_source'] or 'none'}\t{row['reason']}"
         )
 
 

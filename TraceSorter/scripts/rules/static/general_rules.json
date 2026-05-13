@@ -41,14 +41,32 @@
       "all": [{"feature": "has_error_text", "op": "==", "value": true}]
     },
     {
-      "id": "missing_final_answer",
+      "id": "missing_final_answer_strong",
       "layer": "general",
       "label": "badcase",
-      "weight": 0.5,
+      "weight": 0.6,
       "group": "result_missing",
       "group_cap": 0.6,
-      "description": "Trace does not expose a non-empty final answer or final response.",
-      "all": [{"feature": "has_final_answer", "op": "==", "value": false}]
+      "description": "User-configured final answer field is enabled, but this trace does not expose a non-empty final answer.",
+      "all": [
+        {"feature": "final_answer_evidence_enabled", "op": "==", "value": true},
+        {"feature": "final_answer_evidence_strength", "op": "==", "value": "strong"},
+        {"feature": "has_final_answer", "op": "==", "value": false}
+      ]
+    },
+    {
+      "id": "missing_final_answer_medium",
+      "layer": "general",
+      "label": "badcase",
+      "weight": 0.35,
+      "group": "result_missing",
+      "group_cap": 0.6,
+      "description": "Default or LLM-discovered final answer field is enabled, but this trace does not expose a non-empty final answer.",
+      "all": [
+        {"feature": "final_answer_evidence_enabled", "op": "==", "value": true},
+        {"feature": "final_answer_evidence_strength", "op": "==", "value": "medium"},
+        {"feature": "has_final_answer", "op": "==", "value": false}
+      ]
     },
     {
       "id": "high_empty_result_ratio",
@@ -84,14 +102,32 @@
       "all": [{"feature": "step_count", "op": ">=", "value": 25}]
     },
     {
-      "id": "has_final_answer",
+      "id": "has_final_answer_strong",
       "layer": "general",
       "label": "goodcase",
-      "weight": 0.4,
+      "weight": 0.45,
       "group": "completion_evidence",
       "group_cap": 0.45,
-      "description": "Trace contains a non-empty final answer or final response.",
-      "all": [{"feature": "has_final_answer", "op": "==", "value": true}]
+      "description": "Trace contains a non-empty user-configured final answer field.",
+      "all": [
+        {"feature": "final_answer_evidence_enabled", "op": "==", "value": true},
+        {"feature": "final_answer_evidence_strength", "op": "==", "value": "strong"},
+        {"feature": "has_final_answer", "op": "==", "value": true}
+      ]
+    },
+    {
+      "id": "has_final_answer_medium",
+      "layer": "general",
+      "label": "goodcase",
+      "weight": 0.3,
+      "group": "completion_evidence",
+      "group_cap": 0.45,
+      "description": "Trace contains a non-empty default or LLM-discovered final answer field.",
+      "all": [
+        {"feature": "final_answer_evidence_enabled", "op": "==", "value": true},
+        {"feature": "final_answer_evidence_strength", "op": "==", "value": "medium"},
+        {"feature": "has_final_answer", "op": "==", "value": true}
+      ]
     },
     {
       "id": "high_nonempty_result_ratio",

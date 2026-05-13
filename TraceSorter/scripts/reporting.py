@@ -68,15 +68,24 @@ def write_report(
     lines.append("")
     lines.append("## Predictions")
     lines.append("")
-    lines.append("| name | label | predicted | bad_score | good_score | reason |")
-    lines.append("|---|---|---|---:|---:|---|")
+    lines.append(
+        "| name | label | predicted | bad_score | good_score | "
+        "final_answer_policy | final_answer_source | reason |"
+    )
+    lines.append("|---|---|---|---:|---:|---|---|---|")
     for row in results[:max_rows]:
         reason = str(row.get("reason", "")).replace("|", "\\|")
+        final_policy = (
+            f"{row.get('final_answer_evidence_source', 'none')}/"
+            f"{row.get('final_answer_evidence_strength', 'none')}:"
+            f"{row.get('final_answer_adopted_fields') or 'none'}"
+        )
         lines.append(
             f"| `{row.get('name')}` | {row.get('label') or ''} | {row.get('predicted_label')} | "
-            f"{row.get('bad_score')} | {row.get('good_score')} | {reason} |"
+            f"{row.get('bad_score')} | {row.get('good_score')} | {final_policy} | "
+            f"{row.get('final_answer_source') or 'none'} | {reason} |"
         )
     if len(results) > max_rows:
-        lines.append(f"| ... | ... | ... | ... | ... | truncated at {max_rows} rows |")
+        lines.append(f"| ... | ... | ... | ... | ... | ... | ... | truncated at {max_rows} rows |")
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return output

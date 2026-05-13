@@ -69,9 +69,72 @@ TraceSorter/
 - `empty_result_count` / `empty_result_ratio`：空结果数量和比例。
 - `nonempty_result_ratio`：非空结果比例。
 - `has_final_answer` / `final_answer_chars`：是否有最终回答及其长度。
+- `final_answer_source`：命中的最终回答来源，例如 `top_level:final_answer`、`nested:answer`、`assistant:content`。
 - `text_chars`：trace 中可见文本长度。
 
 这些特征的设计目标是跨 trace 格式可迁移，不绑定某一个具体 Agent 框架。
+
+## 最终回答识别配置
+
+早期版本曾使用“任意长度大于等于 80 的字符串”作为最终回答兜底，这容易把工具输出、日志、错误堆栈误判为 final answer。当前版本已移除该逻辑。
+
+现在 `has_final_answer` 只由明确字段或 assistant 消息决定，并且必须先解析出本次运行采用的 final-answer 字段。
+
+顶层字段和内部字段的区别：
+
+- **顶层字段**：只检查 trace 根对象的直接字段，例如 `trace["final_answer"]`。这通常更适合业务最终结果字段。
+- **内部字段**：递归检查 trace 内任意 dict 节点，例如某个 step、message 或 event 的 `answer` 字段。它覆盖更广，但可能命中中间过程内容。
+
+证据采用策略：
+
+- 用户通过 `--final-answer-keys` 或 `--final-answer-config` 指定字段：强证据。
+- 用户未指定时，脚本先扫描输入 trace 是否命中默认候选字段：中等证据。
+- LLM 方法可先让大模型判断业务 final-answer 字段，再把字段写入配置并设置 `evidence_source=llm`：中等证据。
+- 如果没有用户指定、默认命中或 LLM 发现，则 `has_final_answer` 不参与 good/bad 判定。
+
+默认候选字段：
+
+- 顶层字段：默认 `final`、`final_answer`、`final_response`、`answer`、`response`、`output`、`result`。
+- 内部字段：默认 `final_answer`、`final_response`、`answer`。
+- assistant 消息：默认 `role=assistant` 且 `content` 非空。
+
+默认配置模板：
+
+```text
+scripts/rules/static/final_answer_config.json
+```
+
+如果某个业务的最终回答字段叫 `business_result` 或 `summary_text`，可以用命令行快速追加：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --final-answer-keys business_result,summary_text
+```
+
+也可以使用完整 JSON 配置：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --final-answer-config .\final_answer_config.json
+```
+
+配置示例：
+
+```json
+{
+  "top_level_keys": ["final_answer", "business_result"],
+  "nested_keys": ["final_answer", "business_result", "summary_text"],
+  "assistant_roles": ["assistant"],
+  "assistant_content_keys": ["content"],
+  "min_chars": 1,
+  "evidence_source": "user"
+}
+```
+
+`top_level_keys` 适合最终回答只出现在 trace 顶层的业务字段；`nested_keys` 适合可能出现在任意节点的业务字段。若字段名也会出现在中间工具结果中，应优先放在 `top_level_keys`，避免误判。
+
+输出报告会显示：
+
+- `final_answer_policy`：是否采用 final-answer 证据、证据来源、证据强度和采用字段。
+- `final_answer_source`：当前样本实际命中的字段，例如 `top_level:business_result`。
 
 ## 第一层：通用静态规则
 

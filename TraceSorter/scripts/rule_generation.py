@@ -5,7 +5,7 @@ import statistics
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from features import extract_features
+from features import FinalAnswerConfig, extract_features
 from trace_io import TraceRecord, records_with_labels
 
 
@@ -45,8 +45,12 @@ def _write_rules(path: str | Path, rules: List[Dict[str, Any]]) -> Path:
     return output
 
 
-def generate_unlabeled_rules(records: Iterable[TraceRecord], output_path: str | Path) -> List[Dict[str, Any]]:
-    feature_rows = [extract_features(record) for record in records]
+def generate_unlabeled_rules(
+    records: Iterable[TraceRecord],
+    output_path: str | Path,
+    final_answer_config: FinalAnswerConfig | None = None,
+) -> List[Dict[str, Any]]:
+    feature_rows = [extract_features(record, final_answer_config) for record in records]
     rules: List[Dict[str, Any]] = []
     for feature in NUMERIC_BAD_FEATURES:
         values = [float(row.get(feature, 0.0)) for row in feature_rows]
@@ -76,7 +80,10 @@ def generate_unlabeled_rules(records: Iterable[TraceRecord], output_path: str | 
                 "label": "badcase",
                 "weight": 0.35,
                 "description": "Most comparable traces expose a final answer, but this one does not.",
-                "all": [{"feature": "has_final_answer", "op": "==", "value": False}],
+                "all": [
+                    {"feature": "final_answer_evidence_enabled", "op": "==", "value": True},
+                    {"feature": "has_final_answer", "op": "==", "value": False},
+                ],
             }
         )
     _write_rules(output_path, rules)
@@ -88,9 +95,13 @@ def _mean(rows: List[Dict[str, Any]], feature: str) -> float:
     return statistics.fmean(values) if values else 0.0
 
 
-def generate_labeled_rules(records: Iterable[TraceRecord], output_path: str | Path) -> List[Dict[str, Any]]:
+def generate_labeled_rules(
+    records: Iterable[TraceRecord],
+    output_path: str | Path,
+    final_answer_config: FinalAnswerConfig | None = None,
+) -> List[Dict[str, Any]]:
     labeled = records_with_labels(records)
-    rows = [(record.label, extract_features(record)) for record in labeled]
+    rows = [(record.label, extract_features(record, final_answer_config)) for record in labeled]
     good_rows = [features for label, features in rows if label == "goodcase"]
     bad_rows = [features for label, features in rows if label == "badcase"]
     if not good_rows or not bad_rows:
@@ -131,7 +142,10 @@ def generate_labeled_rules(records: Iterable[TraceRecord], output_path: str | Pa
                 "label": "badcase",
                 "weight": 0.45,
                 "description": "Missing final answer is more common in labeled badcase train traces.",
-                "all": [{"feature": "has_final_answer", "op": "==", "value": False}],
+                "all": [
+                    {"feature": "final_answer_evidence_enabled", "op": "==", "value": True},
+                    {"feature": "has_final_answer", "op": "==", "value": False},
+                ],
             }
         )
         rules.append(
@@ -141,7 +155,10 @@ def generate_labeled_rules(records: Iterable[TraceRecord], output_path: str | Pa
                 "label": "goodcase",
                 "weight": 0.25,
                 "description": "Final answer presence is more common in labeled goodcase train traces.",
-                "all": [{"feature": "has_final_answer", "op": "==", "value": True}],
+                "all": [
+                    {"feature": "final_answer_evidence_enabled", "op": "==", "value": True},
+                    {"feature": "has_final_answer", "op": "==", "value": True},
+                ],
             }
         )
 
