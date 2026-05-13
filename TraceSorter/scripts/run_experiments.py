@@ -80,13 +80,7 @@ def generate_llm_rules(args: argparse.Namespace) -> str:
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
 
-    response = call_llm(
-        prompt,
-        provider=args.llm_provider,
-        model=args.llm_model,
-        temperature=args.llm_temperature,
-        extra_args=_parse_llm_extra(args.llm_extra),
-    )
+    response = call_llm(prompt)
     if not response:
         raise RuntimeError(
             "LLM method was selected, so call_llm() was triggered but returned empty output. "
@@ -407,6 +401,7 @@ def main(argv: List[str] | None = None) -> None:
 if __name__ == "__main__":
     # You may write parameters here when running this file from an IDE.
     # Example:
-    # SCRIPT_ARGS = [r".\traces", "--rule-layer", "general", "--output-dir", r".\results"]
-    SCRIPT_ARGS = None
+    SCRIPT_ARGS = [r"D:\Data\agent\trace\all", "--metadata", r"D:\Code\github\hehe03\skills-repo\高交all.csv",
+                   "--methods", "llm"]
+    # SCRIPT_ARGS = None
     main(SCRIPT_ARGS)

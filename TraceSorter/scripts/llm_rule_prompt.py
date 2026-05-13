@@ -76,15 +76,11 @@ def load_rules_payload(path: str | Path) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {"rules": []}
 
 
-def call_llm(
-    prompt: str,
-    *,
-    provider: str | None = None,
-    model: str | None = None,
-    temperature: float = 0.0,
-    extra_args: Dict[str, Any] | None = None,
-) -> str:
-    pass
+def call_llm(query: str) -> str:
+    from aigc import UniAIGC
+    llm = UniAIGC()
+    res = llm.client_qwen3_32b(query)
+    return res
 
 
 def _conditions_to_text(rule: Dict[str, Any]) -> str:

@@ -44,9 +44,9 @@
       "id": "missing_final_answer_strong",
       "layer": "general",
       "label": "badcase",
-      "weight": 0.6,
+      "weight": 1,
       "group": "result_missing",
-      "group_cap": 0.6,
+      "group_cap": 1,
       "description": "User-configured final answer field is enabled, but this trace does not expose a non-empty final answer.",
       "all": [
         {"feature": "final_answer_evidence_enabled", "op": "==", "value": true},
@@ -105,9 +105,9 @@
       "id": "has_final_answer_strong",
       "layer": "general",
       "label": "goodcase",
-      "weight": 0.45,
+      "weight": 1,
       "group": "completion_evidence",
-      "group_cap": 0.45,
+      "group_cap": 1,
       "description": "Trace contains a non-empty user-configured final answer field.",
       "all": [
         {"feature": "final_answer_evidence_enabled", "op": "==", "value": true},
