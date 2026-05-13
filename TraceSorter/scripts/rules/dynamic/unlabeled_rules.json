@@ -1,0 +1,4 @@
+{
+  "rules": [],
+  "note": "Generated unlabeled cohort rules live here. Run scripts/run_experiments.py with --generate-dynamic-rules unlabeled or auto."
+}

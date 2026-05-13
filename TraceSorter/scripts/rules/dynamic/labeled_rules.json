@@ -1,0 +1,4 @@
+{
+  "rules": [],
+  "note": "Generated labeled train-set rules live here. Run scripts/run_experiments.py with --generate-dynamic-rules labeled or auto."
+}

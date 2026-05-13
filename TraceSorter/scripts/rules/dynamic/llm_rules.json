@@ -1,0 +1,4 @@
+{
+  "rules": [],
+  "note": "LLM-generated rules live here. Generate a prompt with scripts/llm_rule_prompt.py, ask Codex/OpenCode or another LLM to emit rule JSON, review it, then paste accepted rules into this file."
+}
