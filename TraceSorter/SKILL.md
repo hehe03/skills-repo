@@ -161,7 +161,10 @@ python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv
 
 - `--bad-threshold`：判为 badcase 的最低风险分，默认 `0.60`。
 - `--good-threshold`：判为 goodcase 的最低支持分，默认 `0.50`。
-- `--output-dir`：实验报告输出目录，默认当前目录。
+- `--eval-split`：指定 metadata `split` 列中用于评估的样本，例如 `test`、`train`、`validation`。不指定时使用全部样本。
+- `--methods`：选择多个方法做对比实验，例如 `general,unlabeled,llm` 或 `all`。
+- `--output-dir`：自动命名报告的输出目录。
+- `--output`：明确指定单个 Markdown 报告文件路径；设置后会覆盖 `--output-dir` 自动命名。
 - `--max-rows`：Markdown 报告中最多展示的样本行数。
 - `--final-answer-item`：追加业务相关最终回答键值对模式，格式为 `key:value`，可重复传入，`*` 匹配任意字符。
 - `--final-answer-config`：使用 JSON 配置控制最终回答识别。

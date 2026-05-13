@@ -72,6 +72,17 @@ def load_rules_payload(path: str | Path) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {"rules": []}
 
 
+def call_llm(
+    prompt: str,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    temperature: float = 0.0,
+    extra_args: Dict[str, Any] | None = None,
+) -> str:
+    pass
+
+
 def _conditions_to_text(rule: Dict[str, Any]) -> str:
     parts: List[str] = []
     for key in ("all", "any"):
@@ -101,6 +112,7 @@ def write_llm_rule_report(
     proposed_features = llm_payload.get("proposed_features") or accepted_payload.get("proposed_features") or []
 
     output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
     lines: List[str] = [
         "# LLM 规则发现报告",
         "",
@@ -273,7 +285,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", help="Optional prompt Markdown output path.")
     parser.add_argument(
         "--llm-output",
-        help="Optional JSON/Markdown file containing the LLM response to summarize.",
+        help="Optional JSON/Markdown file containing the LLM response to summarize, or destination when --call-llm is used.",
+    )
+    parser.add_argument(
+        "--call-llm",
+        action="store_true",
+        help="Call the local call_llm() hook after generating the prompt.",
+    )
+    parser.add_argument("--llm-provider", help="Provider name passed to call_llm().")
+    parser.add_argument("--llm-model", help="Model name passed to call_llm().")
+    parser.add_argument("--llm-temperature", type=float, default=0.0, help="Temperature passed to call_llm().")
+    parser.add_argument(
+        "--llm-extra",
+        action="append",
+        default=[],
+        help="Extra key=value argument passed to call_llm(). Can be repeated.",
     )
     parser.add_argument(
         "--rules-path",
@@ -310,10 +336,31 @@ def main() -> None:
         print(f"Wrote prompt: {args.output}")
     else:
         print(prompt)
+    llm_output_path = args.llm_output
+    if args.call_llm:
+        extra_args: Dict[str, Any] = {}
+        for item in args.llm_extra:
+            if "=" not in item:
+                raise ValueError(f"--llm-extra must use key=value format: {item}")
+            key, value = item.split("=", 1)
+            extra_args[key.strip()] = value.strip()
+        response = call_llm(
+            prompt,
+            provider=args.llm_provider,
+            model=args.llm_model,
+            temperature=args.llm_temperature,
+            extra_args=extra_args,
+        )
+        if not response:
+            raise RuntimeError("call_llm() returned empty output. Please implement scripts/llm_rule_prompt.py::call_llm.")
+        llm_output_path = llm_output_path or "llm_response.json"
+        Path(llm_output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(llm_output_path).write_text(response, encoding="utf-8")
+        print(f"Wrote LLM response: {llm_output_path}")
     if not args.no_report:
         report_path = write_llm_rule_report(
             args.report_output,
-            llm_output_path=args.llm_output,
+            llm_output_path=llm_output_path,
             rules_path=args.rules_path,
             prompt_path=args.output,
         )

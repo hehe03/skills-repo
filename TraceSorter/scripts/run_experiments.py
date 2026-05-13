@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from features import discover_default_final_answer_config, extract_features, load_final_answer_config
+from metrics import confusion_and_scores
 from reporting import default_report_path, write_report
 from rule_engine import classify_features, load_rules
 from rule_generation import generate_labeled_rules, generate_unlabeled_rules
@@ -28,13 +29,22 @@ def _fit_records(records: List[TraceRecord]) -> List[TraceRecord]:
     return train or records
 
 
-def _eval_records(records: List[TraceRecord]) -> List[TraceRecord]:
-    test = split_records(records, "test")
-    return test or records
+def _eval_records(records: List[TraceRecord], eval_split: str | None = None) -> List[TraceRecord]:
+    if eval_split:
+        selected = split_records(records, eval_split)
+        if not selected:
+            raise ValueError(f"metadata split column has no samples for eval split: {eval_split}")
+        return selected
+    return records
 
 
-def maybe_generate_rules(args: argparse.Namespace, records: List[TraceRecord]) -> List[str]:
+def maybe_generate_rules(
+    args: argparse.Namespace,
+    records: List[TraceRecord],
+    methods: List[str] | None = None,
+) -> List[str]:
     mode = args.generate_dynamic_rules
+    target_methods = methods or [args.rule_layer]
     generated: List[str] = []
     fit_records = _fit_records(records)
     labeled_fit = records_with_labels(fit_records)
@@ -44,10 +54,10 @@ def maybe_generate_rules(args: argparse.Namespace, records: List[TraceRecord]) -
     )
 
     do_unlabeled = mode in {"unlabeled", "both"} or (
-        mode == "auto" and args.rule_layer in {"unlabeled", "all"} and len(fit_records) >= 3
+        mode == "auto" and any(method in {"unlabeled", "all"} for method in target_methods) and len(fit_records) >= 3
     )
     do_labeled = mode in {"labeled", "both"} or (
-        mode == "auto" and args.rule_layer in {"labeled", "all"} and _has_both_labels(labeled_fit)
+        mode == "auto" and any(method in {"labeled", "all"} for method in target_methods) and _has_both_labels(labeled_fit)
     )
 
     if do_unlabeled:
@@ -70,22 +80,41 @@ def rule_paths_for_layer(layer: str) -> List[Path]:
     return paths
 
 
-def run_experiment(args: argparse.Namespace) -> Path:
+def parse_methods(value: str | None) -> List[str]:
+    if not value:
+        return []
+    methods: List[str] = []
+    for item in value.split(","):
+        method = item.strip().lower()
+        if not method:
+            continue
+        if method == "all":
+            for candidate in ("general", "unlabeled", "labeled", "llm"):
+                if candidate not in methods:
+                    methods.append(candidate)
+            continue
+        if method not in {"general", "unlabeled", "labeled", "llm"}:
+            raise ValueError(f"unsupported method: {method}")
+        if method not in methods:
+            methods.append(method)
+    return methods
+
+
+def validate_method_requirements(args: argparse.Namespace, methods: List[str]) -> None:
     if args.metadata is None and (
-        args.rule_layer == "labeled" or args.generate_dynamic_rules in {"labeled", "both"}
+        "labeled" in methods or args.generate_dynamic_rules in {"labeled", "both"}
     ):
         raise ValueError("metadata is required for labeled/supervised rule generation or evaluation")
-    records = load_records(args.trace_path, args.metadata)
-    maybe_generate_rules(args, records)
-    rules = load_rules(rule_paths_for_layer(args.rule_layer))
-    eval_records = _eval_records(records)
-    final_answer_config = discover_default_final_answer_config(
-        records,
-        load_final_answer_config(args.final_answer_config, args.final_answer_item),
-    )
 
+
+def predict_with_method(
+    records: List[TraceRecord],
+    rules: List[Dict[str, Any]],
+    final_answer_config: Any,
+    args: argparse.Namespace,
+) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
-    for record in eval_records:
+    for record in records:
         features = extract_features(record, final_answer_config)
         prediction = classify_features(
             features,
@@ -108,6 +137,21 @@ def run_experiment(args: argparse.Namespace) -> Path:
                 **prediction,
             }
         )
+    return results
+
+
+def run_experiment(args: argparse.Namespace) -> Path:
+    validate_method_requirements(args, [args.rule_layer])
+    records = load_records(args.trace_path, args.metadata)
+    maybe_generate_rules(args, records, [args.rule_layer])
+    rules = load_rules(rule_paths_for_layer(args.rule_layer))
+    eval_records = _eval_records(records, args.eval_split)
+    final_answer_config = discover_default_final_answer_config(
+        records,
+        load_final_answer_config(args.final_answer_config, args.final_answer_item),
+    )
+
+    results = predict_with_method(eval_records, rules, final_answer_config, args)
 
     method = f"rule_{args.rule_layer}"
     output_path = Path(args.output) if args.output else default_report_path(args.output_dir, method)
@@ -120,6 +164,90 @@ def run_experiment(args: argparse.Namespace) -> Path:
         results=results,
         max_rows=args.max_rows,
     )
+
+
+def run_methods_comparison(args: argparse.Namespace, methods: List[str]) -> Path:
+    validate_method_requirements(args, methods)
+    records = load_records(args.trace_path, args.metadata)
+    maybe_generate_rules(args, records, methods)
+    eval_records = _eval_records(records, args.eval_split)
+    final_answer_config = discover_default_final_answer_config(
+        records,
+        load_final_answer_config(args.final_answer_config, args.final_answer_item),
+    )
+    results_by_method: Dict[str, List[Dict[str, Any]]] = {}
+    rules_by_method: Dict[str, List[Dict[str, Any]]] = {}
+    for method in methods:
+        rules = load_rules(rule_paths_for_layer(method))
+        rules_by_method[method] = rules
+        results_by_method[method] = predict_with_method(eval_records, rules, final_answer_config, args)
+
+    output_path = Path(args.output) if args.output else default_report_path(args.output_dir, "methods_comparison")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    lines: List[str] = [
+        "# Trace Sorter Methods Comparison",
+        "",
+        f"- Trace path: `{args.trace_path}`",
+        f"- Metadata: `{args.metadata}`" if args.metadata else "- Metadata: none",
+        f"- Eval split: `{args.eval_split}`" if args.eval_split else "- Eval split: all samples",
+        f"- Methods: {', '.join(methods)}",
+        f"- Samples evaluated: {len(eval_records)}",
+        "",
+    ]
+    first_results = next(iter(results_by_method.values()), [])
+    policies: Dict[str, int] = {}
+    for row in first_results:
+        policy = (
+            f"{row.get('final_answer_evidence_source', 'none')}/"
+            f"{row.get('final_answer_evidence_strength', 'none')}:"
+            f"{row.get('final_answer_adopted_fields') or 'none'}"
+        )
+        policies[policy] = policies.get(policy, 0) + 1
+    lines.extend(["## Method Notes", "", "Final answer policy:", "| policy | samples |", "|---|---:|"])
+    for policy, count in sorted(policies.items()):
+        lines.append(f"| `{policy}` | {count} |")
+    lines.append("")
+
+    if any(row.get("label") in {"goodcase", "badcase"} for row in first_results):
+        lines.extend(
+            [
+                "## Metrics",
+                "",
+                "| method | rules | accuracy | precision(badcase) | recall(badcase) | f1(badcase) | tp | fp | tn | fn |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for method in methods:
+            metrics = confusion_and_scores(results_by_method[method])
+            lines.append(
+                f"| {method} | {len(rules_by_method[method])} | {metrics['accuracy']} | "
+                f"{metrics['precision']} | {metrics['recall']} | {metrics['f1']} | "
+                f"{metrics['tp']} | {metrics['fp']} | {metrics['tn']} | {metrics['fn']} |"
+            )
+        lines.append("")
+
+    lines.extend(["## Predictions", ""])
+    header = "| name | label | " + " | ".join(methods) + " |"
+    separator = "|---|---|" + "|".join("---" for _ in methods) + "|"
+    lines.append(header)
+    lines.append(separator)
+    by_method_name = {
+        method: {row["name"]: row for row in rows}
+        for method, rows in results_by_method.items()
+    }
+    for record in eval_records[: args.max_rows]:
+        row_cells = [f"`{record.name}`", record.label or ""]
+        for method in methods:
+            prediction = by_method_name[method].get(record.name, {})
+            row_cells.append(
+                f"{prediction.get('predicted_label', '')} "
+                f"(bad={prediction.get('bad_score', '')}, good={prediction.get('good_score', '')})"
+            )
+        lines.append("| " + " | ".join(row_cells) + " |")
+    if len(eval_records) > args.max_rows:
+        lines.append(f"| ... | ... | {' | '.join('...' for _ in methods)} |")
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return output_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -135,7 +263,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--rule-layer",
         choices=["general", "unlabeled", "labeled", "llm", "all"],
         default="general",
-        help="Rule layer to evaluate.",
+        help="Single rule layer to evaluate when --methods is not set.",
+    )
+    parser.add_argument(
+        "--methods",
+        help="Comma-separated methods to compare in one report, e.g. general,unlabeled,llm or all.",
     )
     parser.add_argument(
         "--generate-dynamic-rules",
@@ -145,8 +277,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--bad-threshold", type=float, default=0.60)
     parser.add_argument("--good-threshold", type=float, default=0.50)
-    parser.add_argument("--output-dir", default="./results", help="Directory for timestamped Markdown reports.")
-    parser.add_argument("--output", help="Explicit Markdown output path. Overrides method+time naming.")
+    parser.add_argument(
+        "--eval-split",
+        help="Optional metadata split value to evaluate. If omitted, all samples are evaluated.",
+    )
+    parser.add_argument("--output-dir", default="./results", help="Directory used for auto-named Markdown reports.")
+    parser.add_argument("--output", help="Explicit Markdown output file path. Overrides --output-dir auto naming.")
     parser.add_argument("--max-rows", type=int, default=200)
     parser.add_argument(
         "--final-answer-config",
@@ -162,7 +298,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: List[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    report_path = run_experiment(args)
+    methods = parse_methods(args.methods)
+    report_path = run_methods_comparison(args, methods) if methods else run_experiment(args)
     print(f"Wrote report: {report_path}")
 
 

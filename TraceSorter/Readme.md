@@ -341,6 +341,26 @@ python .\scripts\run_trace_analysis.py .\traces
 python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --rule-layer general
 ```
 
+指定 metadata 中某个 split 作为测试样本：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --rule-layer general --eval-split validation
+```
+
+如果不指定 `--eval-split`，会使用全部样本；如果指定的 split 没有样本，脚本会报错。
+
+对比多个方法：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --methods general,unlabeled,llm
+python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --methods all
+```
+
+`--output-dir` 和 `--output` 的区别：
+
+- `--output-dir`：只指定目录，脚本按“方法+时间”自动命名 Markdown 报告。
+- `--output`：指定完整报告文件路径，适合固定文件名；设置后不再使用 `--output-dir` 自动命名。
+
 不带 metadata 运行通用规则实验：
 
 ```powershell
@@ -375,6 +395,12 @@ python .\scripts\llm_rule_prompt.py .\traces --metadata .\metadata.csv --split t
 
 ```powershell
 python .\scripts\llm_rule_prompt.py .\traces --output llm_rule_prompt.md --no-report
+```
+
+如果希望脚本自动调用自定义 LLM，在 `scripts/llm_rule_prompt.py` 中补全 `call_llm()` 函数，然后运行：
+
+```powershell
+python .\scripts\llm_rule_prompt.py .\traces --output llm_rule_prompt.md --call-llm --llm-provider custom --llm-model my-model --llm-output llm_response.json
 ```
 
 也可以在 `scripts/run_experiments.py` 文件底部的 `if __name__ == "__main__":` 后写入参数，适合 IDE 运行：
