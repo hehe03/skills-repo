@@ -39,6 +39,7 @@ def classify_records(args: argparse.Namespace) -> List[Dict[str, Any]]:
             rules,
             bad_threshold=args.bad_threshold,
             good_threshold=args.good_threshold,
+            aggregation=args.aggregation,
         )
         results.append(
             {
@@ -65,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--bad-threshold", type=float, default=0.60)
     parser.add_argument("--good-threshold", type=float, default=0.50)
+    parser.add_argument(
+        "--aggregation",
+        choices=["weighted", "group_capped"],
+        default="weighted",
+        help="How to combine matched rule weights.",
+    )
     parser.add_argument("--output", help="Optional JSON output path.")
     return parser
 

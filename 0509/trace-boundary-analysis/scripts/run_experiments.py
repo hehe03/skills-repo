@@ -50,6 +50,7 @@ DEFAULTS: dict[str, Any] = {
     "sweep_hybrid_bad_risk_thresholds": "0.45,0.50,0.55,0.60,0.65",
     "sweep_good_margins": "0.00,0.05,0.10,0.15",
     "sweep_supervised_thresholds": "0.50,0.65,0.75,0.85,0.90",
+    "rule_config": None,
     "output": None,
     "sweep_output_dir": ".",
 }
@@ -197,8 +198,8 @@ def build_parser(defaults: dict[str, Any]) -> argparse.ArgumentParser:
     return parser
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    config = flatten_config(load_config(preparse_config(argv)))
+def parse_args(argv: list[str] | None = None, config: dict[str, Any] | None = None) -> argparse.Namespace:
+    config = flatten_config(config or {})
     defaults = {**DEFAULTS, **config}
     parser = build_parser(defaults)
     args = parser.parse_args(argv)
@@ -274,9 +275,10 @@ def sort_sweep_rows(rows: list[dict[str, float | int | str]]) -> list[dict[str, 
 
 def run_rule_sweep(args, items) -> list[dict[str, float | int | str]]:
     rows: list[dict[str, float | int | str]] = []
+    rule_config = getattr(args, "rule_config", None)
     for rule_layer in parse_str_list(args.sweep_rule_layers):
         for repeat_threshold in parse_int_list(args.sweep_repeat_thresholds):
-            predictions = classify_rule.classify(items, repeat_threshold, rule_layer)
+            predictions = classify_rule.classify(items, repeat_threshold, rule_layer, rule_config)
             rows.append(
                 build_metric_row(
                     "rule",
@@ -380,9 +382,10 @@ def combine_predictions(rule_predictions, other_predictions, mode: str):
 
 def run_ensemble_sweep(args, items) -> list[dict[str, float | int | str]]:
     rows: list[dict[str, float | int | str]] = []
+    rule_config = getattr(args, "rule_config", None)
     for rule_layer in parse_str_list(args.sweep_rule_layers):
         for repeat_threshold in parse_int_list(args.sweep_repeat_thresholds):
-            rule_predictions = classify_rule.classify(items, repeat_threshold, rule_layer)
+            rule_predictions = classify_rule.classify(items, repeat_threshold, rule_layer, rule_config)
             for threshold in parse_float_list(args.sweep_thresholds):
                 for bad_threshold in parse_float_list(args.sweep_bad_risk_thresholds):
                     for bad_weight in parse_float_list(args.sweep_bad_risk_weights):
@@ -532,8 +535,8 @@ def run_single_experiment(args, items) -> list[dict[str, float | int | str]]:
     return [build_metric_row(strategy, {}, predictions)]
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+def main(argv: list[str] | None = None, config: dict[str, Any] | None = None) -> int:
+    args = parse_args(argv, config)
     metadata = load_metadata(Path(args.metadata)) if args.metadata else None
     trace_files = discover_trace_files(Path(args.input_path))
     items = build_items(trace_files, metadata, args.split)
@@ -568,4 +571,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    cli_argv = sys.argv[1:]
+    runtime_config = load_config(preparse_config(cli_argv))
+    raise SystemExit(main(cli_argv, runtime_config))

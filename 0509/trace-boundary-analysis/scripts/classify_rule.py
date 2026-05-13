@@ -369,8 +369,13 @@ def classify(
     items: list[TraceItem],
     repeat_threshold: int | None = None,
     rule_layer: str = "domain_prior",
+    config_override: dict[str, Any] | None = None,
 ) -> list[Prediction]:
-    config = load_rule_config()
+    config = (
+        normalize_config(merge_defaults(DEFAULT_RULE_CONFIG, config_override))
+        if config_override is not None
+        else load_rule_config()
+    )
     normalized_layer = normalize_rule_layer(rule_layer)
     predictions: list[Prediction] = []
     for item in items:

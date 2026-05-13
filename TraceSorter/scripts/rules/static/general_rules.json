@@ -5,6 +5,8 @@
       "layer": "general",
       "label": "badcase",
       "weight": 1.0,
+      "group": "hard_failure",
+      "group_cap": 1.0,
       "description": "Trace JSON could not be parsed.",
       "all": [{"feature": "parse_error", "op": "==", "value": true}]
     },
@@ -13,6 +15,8 @@
       "layer": "general",
       "label": "badcase",
       "weight": 0.9,
+      "group": "hard_failure",
+      "group_cap": 1.0,
       "description": "Trace object is empty.",
       "all": [{"feature": "is_empty_trace", "op": "==", "value": true}]
     },
@@ -21,6 +25,8 @@
       "layer": "general",
       "label": "badcase",
       "weight": 0.45,
+      "group": "structure_missing",
+      "group_cap": 0.55,
       "description": "Trace has no observable steps, messages, actions, or tool events.",
       "all": [{"feature": "has_steps", "op": "==", "value": false}]
     },
@@ -29,6 +35,8 @@
       "layer": "general",
       "label": "badcase",
       "weight": 0.7,
+      "group": "error_signal",
+      "group_cap": 0.75,
       "description": "Trace contains error, exception, timeout, or failure text.",
       "all": [{"feature": "has_error_text", "op": "==", "value": true}]
     },
@@ -37,6 +45,8 @@
       "layer": "general",
       "label": "badcase",
       "weight": 0.5,
+      "group": "result_missing",
+      "group_cap": 0.6,
       "description": "Trace does not expose a non-empty final answer or final response.",
       "all": [{"feature": "has_final_answer", "op": "==", "value": false}]
     },
@@ -45,6 +55,8 @@
       "layer": "general",
       "label": "badcase",
       "weight": 0.35,
+      "group": "result_missing",
+      "group_cap": 0.6,
       "description": "Most observed steps have empty results.",
       "all": [
         {"feature": "step_count", "op": ">=", "value": 3},
@@ -56,6 +68,8 @@
       "layer": "general",
       "label": "badcase",
       "weight": 0.45,
+      "group": "loop_or_inefficiency",
+      "group_cap": 0.55,
       "description": "Same action repeats consecutively, suggesting a loop or stuck agent.",
       "all": [{"feature": "max_consecutive_same_action", "op": ">=", "value": 3}]
     },
@@ -64,6 +78,8 @@
       "layer": "general",
       "label": "badcase",
       "weight": 0.25,
+      "group": "loop_or_inefficiency",
+      "group_cap": 0.55,
       "description": "Trace has many steps, which is a weak risk signal for inefficient or stuck execution.",
       "all": [{"feature": "step_count", "op": ">=", "value": 25}]
     },
@@ -72,6 +88,8 @@
       "layer": "general",
       "label": "goodcase",
       "weight": 0.4,
+      "group": "completion_evidence",
+      "group_cap": 0.45,
       "description": "Trace contains a non-empty final answer or final response.",
       "all": [{"feature": "has_final_answer", "op": "==", "value": true}]
     },
@@ -80,6 +98,8 @@
       "layer": "general",
       "label": "goodcase",
       "weight": 0.25,
+      "group": "result_evidence",
+      "group_cap": 0.3,
       "description": "Most observed steps have non-empty results.",
       "all": [
         {"feature": "step_count", "op": ">=", "value": 1},
@@ -91,6 +111,8 @@
       "layer": "general",
       "label": "goodcase",
       "weight": 0.25,
+      "group": "clean_execution",
+      "group_cap": 0.25,
       "description": "Trace has no error text and no repeated-action loop signal.",
       "all": [
         {"feature": "has_error_text", "op": "==", "value": false},

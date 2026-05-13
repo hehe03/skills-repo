@@ -1,0 +1,72 @@
+# Rule-only comparison config.
+#
+# Local usage:
+#   python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv> --config .\config_rule.yaml
+#
+# You can also set input_path/metadata below and then run:
+#   python .\scripts\run_experiments.py --config .\config_rule.yaml
+
+# input_path: .\traces
+# metadata: .\metadata.csv
+split: null
+sweep_output_dir: .\results
+
+sweep:
+  rule: true
+  rule_layers:
+    - general
+    - trace_format
+    - domain_prior
+  repeat_thresholds:
+    - 2
+    - 3
+    - 4
+
+rule_config:
+  version: rule-v1-layered-config
+  default_label_when_no_bad_rule_matches: goodcase
+  rule_layers:
+    general:
+      description: 不知晓 trace 结构，只使用通用 JSON 质量规则。
+      failure_markers:
+        - error
+        - failed
+        - exception
+        - traceback
+        - "null"
+        - "none"
+        - 失败
+        - 报错
+        - 异常
+        - 未找到
+        - 无权限
+        - 超时
+        - 无法获取
+        - 无结果
+        - 没有查询到
+        - 请求失败
+      badcase_rules:
+        root_object_required: true
+        non_empty_root_required: true
+        all_leaf_values_empty: true
+
+    trace_format:
+      description: 知晓 trace 的 query/plan_list/task_name/command/result 基本格式。
+      final_result_fields:
+        - final_result
+        - answer
+        - response
+      badcase_rules:
+        plan_list_required: true
+        empty_plan_without_final_result: true
+        all_step_results_empty: true
+        failed_step_continue_with_new_command: true
+        repeated_or_loop_tasks:
+          enabled: true
+          repeat_threshold: 3
+          include_command_args: true
+
+    domain_prior:
+      description: 知晓当前任务的额外成功先验。
+      success_task_keywords:
+        - 生成大纲

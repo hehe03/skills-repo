@@ -39,7 +39,7 @@ TraceSorter/
 1. **读取 trace 与 metadata**：`trace_io.py` 读取单个 JSON 或目录下的 JSON 文件；metadata CSV 用于补充 `label`、`source`、`split` 信息。
 2. **抽取行为特征**：`features.py` 遍历 trace，识别常见 Agent 轨迹结构，并抽取稳定、可解释的统计特征。
 3. **生成或加载规则**：通用规则直接从静态 JSON 读取；无标注/有标注规则由 `rule_generation.py` 根据样本特征生成。
-4. **执行规则并合并分数**：`rule_engine.py` 对每条 trace 匹配规则，累加 badcase 和 goodcase 权重，最后根据阈值输出标签。
+4. **执行规则并合并分数**：`rule_engine.py` 对每条 trace 匹配规则，按 `weighted` 或 `group_capped` 汇聚 badcase/goodcase 分数，最后根据阈值输出标签。
 
 ## 关于 Codex/OpenCode 与 LLM 配置
 
@@ -90,6 +90,54 @@ TraceSorter/
 - 存在最终回答 -> goodcase 支持。
 - 大部分步骤有非空结果 -> goodcase 支持。
 - 无错误且无重复动作循环 -> goodcase 支持。
+
+### 通用方法 A：普通加权法
+
+`weighted` 是原始通用规则方法。所有命中的规则直接加权求和：
+
+```text
+bad_score = sum(weight of matched badcase rules)
+good_score = sum(weight of matched goodcase rules)
+```
+
+默认判定逻辑：
+
+```text
+bad_score >= 0.60 且 bad_score >= good_score -> badcase
+否则如果 good_score >= 0.50 -> goodcase
+否则 -> goodcase
+```
+
+这种方法适合作为简单 baseline，但相关规则可能重复计分。
+
+### 通用方法 B：规则分组与组内封顶
+
+`group_capped` 是新增通用方法。规则仍然保留各自权重，但会先按语义组汇聚，再限制每组最高贡献：
+
+| label | group | cap | 说明 |
+|---|---|---:|---|
+| badcase | `hard_failure` | 1.00 | JSON 解析失败、空 trace |
+| badcase | `structure_missing` | 0.55 | 缺少可观察步骤 |
+| badcase | `error_signal` | 0.75 | 错误、异常、超时、失败文本 |
+| badcase | `result_missing` | 0.60 | 缺少最终回答、空结果比例高 |
+| badcase | `loop_or_inefficiency` | 0.55 | 连续重复动作、步数过多 |
+| goodcase | `completion_evidence` | 0.45 | 存在最终回答 |
+| goodcase | `result_evidence` | 0.30 | 非空结果比例高 |
+| goodcase | `clean_execution` | 0.25 | 无错误且无循环信号 |
+
+这样做的目的不是完全消除权重，而是避免同一类证据重复放大。例如“缺少最终回答”和“大部分结果为空”都属于结果缺失，不应无上限叠加。
+
+### 权重与阈值核查结论
+
+当前通用规则权重/阈值按无监督场景重新核查后，采用以下原则：
+
+- 硬失败信号可以单独触发 badcase。
+- 单个软风险信号通常不足以触发 badcase，需要多个不同组风险共同出现。
+- 相关软风险信号使用组内封顶降低不鲁棒性。
+- goodcase 规则只作为完成证据，不用于抵消解析失败、空 trace 等硬失败。
+- `bad_threshold=0.60` 与 `good_threshold=0.50` 暂时保留，便于两种通用方法可比。
+
+无标注动态规则由脚本确定性生成，不再要求人工核查后才能进入实验。
 
 ## 第二层：无标注动态规则
 
@@ -204,6 +252,25 @@ python .\scripts\run_trace_analysis.py .\traces
 python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --rule-layer general
 ```
 
+不带 metadata 运行通用规则实验：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --rule-layer general
+```
+
+比较两种通用规则方法：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --compare-general-methods
+python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --compare-general-methods
+```
+
+单独运行分组封顶通用规则：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --rule-layer general --aggregation group_capped
+```
+
 生成并使用无标注动态规则：
 
 ```powershell
@@ -226,6 +293,14 @@ python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --rule-la
 
 ```powershell
 python .\scripts\llm_rule_prompt.py .\traces --metadata .\metadata.csv --split train --output llm_rule_prompt.md
+```
+
+也可以在 `scripts/run_experiments.py` 文件底部的 `if __name__ == "__main__":` 后写入参数，适合 IDE 运行：
+
+```python
+if __name__ == "__main__":
+    SCRIPT_ARGS = [r".\traces", "--compare-general-methods", "--output-dir", r".\results"]
+    main(SCRIPT_ARGS)
 ```
 
 实验报告会输出为 Markdown 文件，命名格式为：
