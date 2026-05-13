@@ -193,9 +193,38 @@ LLM 方法不是让模型直接给每条 trace 判标签，而是让模型生成
 
 LLM 方法使用 `scripts/llm_rule_prompt.py`：
 
-- `build_prompt_from_records()` 根据训练场景生成 prompt，并把训练样本中的动态字段特征一并提供给 LLM。
+- `build_prompt_from_records()` 根据训练场景生成 prompt，并把训练样本压缩为字段概要、特征统计和代表样本。
 - `call_llm()` 是预留钩子，默认返回空字符串，需要你按自己的 provider 实现。
 - `write_llm_rule_report()` 输出中文 `llm_rule_repoert.md`，说明 LLM 发现了哪些规则、是否发现 final-answer 字段、是否提出新特征。
+
+### LLM 输入设计
+
+训练 trace 可能很多、很长，LLM 方法不会默认传入全量原文。Prompt 由以下几部分组成：
+
+1. **dataset_summary**：样本数、标签分布、source/split 分布、文本长度和步骤数统计、训练集中高频字段路径。
+2. **fixed_feature_stats**：通用特征的 min/median/max 或类别计数。
+3. **label_contrasts**：仅有标注场景使用，比较字段在 goodcase/badcase 中的出现率差异。
+4. **selected_samples**：代表样本，不是全量样本；每条包含压缩后的特征、动态字段特征和截断后的 `trace_excerpt`。
+5. **selection_policy**：说明采样策略和截断预算。
+
+采样策略：
+
+- 有标注场景优先保证 `goodcase` 和 `badcase` 都有代表样本。
+- 无标注场景按长度、错误数、final-answer 是否存在、字段路径签名等做多样性选择。
+- 长 trace 只保留 `trace_excerpt`，默认每条最多 `2000` 字符。
+- 每条代表样本默认最多保留 `80` 个动态字段路径。
+- Prompt 默认最多 `60000` 字符，超过后会减少代表样本并截断。
+
+相关参数：
+
+```powershell
+--llm-max-samples 30
+--llm-max-prompt-chars 60000
+--llm-max-trace-chars 2000
+--llm-max-dynamic-fields 80
+```
+
+这样的设计让 LLM 既能看到整体分布，也能看到足够多样的具体样例；在有标注场景中，还能明确比较正负样本差异。
 
 `call_llm()` 签名：
 

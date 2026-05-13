@@ -257,6 +257,9 @@ def generate_llm_rules(
         final_answer_config=final_answer_config,
         training_scenario=scenario,
         max_samples=args.llm_max_samples,
+        max_prompt_chars=args.llm_max_prompt_chars,
+        max_trace_chars=args.llm_max_trace_chars,
+        max_dynamic_fields=args.llm_max_dynamic_fields,
     )
     prompt_path = (
         Path(args.llm_prompt_output)
@@ -566,7 +569,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm-output", help="Path for raw LLM response JSON.")
     parser.add_argument("--llm-prompt-output", help="Path for generated LLM prompt.")
     parser.add_argument("--llm-report-output", help="Path for Chinese LLM rule report.")
-    parser.add_argument("--llm-max-samples", type=int, default=30, help="Maximum train feature rows included in the LLM prompt.")
+    parser.add_argument("--llm-max-samples", type=int, default=30, help="Maximum representative train samples included in the LLM prompt.")
+    parser.add_argument("--llm-max-prompt-chars", type=int, default=60000, help="Maximum LLM prompt characters before truncation.")
+    parser.add_argument("--llm-max-trace-chars", type=int, default=2000, help="Maximum raw trace excerpt characters per selected sample.")
+    parser.add_argument("--llm-max-dynamic-fields", type=int, default=80, help="Maximum dynamic field paths included per selected sample.")
     return parser
 
 

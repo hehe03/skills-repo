@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 from features import discover_default_final_answer_config, extract_features, load_final_answer_config
 from trace_io import TraceRecord, load_records, records_with_labels, split_records
@@ -12,37 +14,55 @@ from trace_io import TraceRecord, load_records, records_with_labels, split_recor
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_LLM_RULES = SCRIPT_DIR / "rules" / "dynamic" / "llm" / "labeled_rules.json"
 
+FIXED_FEATURE_NAMES = [
+    "parse_error",
+    "is_empty_trace",
+    "has_steps",
+    "step_count",
+    "unique_action_count",
+    "unique_action_ratio",
+    "repeated_action_count",
+    "max_consecutive_same_action",
+    "error_count",
+    "has_error_text",
+    "empty_result_count",
+    "empty_result_ratio",
+    "nonempty_result_ratio",
+    "has_final_answer",
+    "final_answer_evidence_enabled",
+    "final_answer_evidence_strength",
+    "final_answer_evidence_source",
+    "final_answer_adopted_fields",
+    "final_answer_chars",
+    "final_answer_source",
+    "text_chars",
+]
+
 FEATURE_DESCRIPTIONS = {
-    "parse_error": "JSON parse failed.",
-    "is_empty_trace": "Trace object is empty.",
-    "has_steps": "Trace contains observable steps, messages, events, or actions.",
-    "step_count": "Number of observable steps/actions.",
-    "unique_action_count": "Number of unique action names.",
-    "unique_action_ratio": "Unique action names divided by step_count.",
-    "repeated_action_count": "Total repeated action count.",
-    "max_consecutive_same_action": "Longest run of the same consecutive action.",
-    "error_count": "Number of error/failure/timeout terms found in text.",
-    "has_error_text": "Whether error-like text appears.",
-    "empty_result_count": "Number of steps with empty result-like fields.",
-    "empty_result_ratio": "Empty result count divided by step_count.",
-    "nonempty_result_ratio": "Non-empty result ratio.",
-    "has_final_answer": "Whether a final answer/final response is visible.",
-    "final_answer_evidence_enabled": "Whether final answer evidence is enabled for this run.",
-    "final_answer_evidence_strength": "strong for user-configured fields, medium for default/LLM-discovered fields, none if disabled.",
-    "final_answer_evidence_source": "How final answer fields were selected: user, default, llm, or none.",
-    "final_answer_adopted_fields": "Comma-separated fields adopted as final answer evidence for this run.",
-    "final_answer_chars": "Approximate final answer character count.",
-    "final_answer_source": "Where final answer detection matched, such as top_level:final_answer or assistant:content.",
-    "text_chars": "Total visible trace text characters.",
-    "trace_field_paths": "Newline-separated normalized leaf field paths observed in the trace.",
-    "field_exists:<path>": "Dynamic field feature. True when the normalized trace field path exists.",
-    "field_count:<path>": "Dynamic field feature. Number of leaf values found at this path.",
-    "field_text:<path>": "Dynamic field feature. Joined text values found at this path.",
-    "field_nonempty_ratio:<path>": "Dynamic field feature. Non-empty value ratio for this path.",
-    "field_number_mean:<path>": "Dynamic field feature. Mean numeric value for this path when all values are numeric.",
-    "field_number_min:<path>": "Dynamic field feature. Minimum numeric value for this path when all values are numeric.",
-    "field_number_max:<path>": "Dynamic field feature. Maximum numeric value for this path when all values are numeric.",
-    "field_bool_true_ratio:<path>": "Dynamic field feature. True ratio for this path when all values are boolean.",
+    "fixed_features": {
+        "parse_error": "JSON parse failed.",
+        "is_empty_trace": "Trace object is empty.",
+        "has_steps": "Trace contains observable steps, messages, events, or actions.",
+        "step_count": "Number of observable steps/actions.",
+        "unique_action_ratio": "Unique action names divided by step_count.",
+        "repeated_action_count": "Total repeated action count.",
+        "max_consecutive_same_action": "Longest run of the same consecutive action.",
+        "error_count": "Number of error/failure/timeout terms found in text.",
+        "empty_result_ratio": "Empty result count divided by step_count.",
+        "has_final_answer": "Whether a final answer/final response is visible.",
+        "text_chars": "Total visible trace text characters.",
+    },
+    "dynamic_field_features": {
+        "trace_field_paths": "Newline-separated normalized leaf field paths observed in the trace.",
+        "field_exists:<path>": "True when the normalized trace field path exists.",
+        "field_count:<path>": "Number of leaf values found at this path.",
+        "field_text:<path>": "Joined text values found at this path.",
+        "field_nonempty_ratio:<path>": "Non-empty value ratio for this path.",
+        "field_number_mean:<path>": "Mean numeric value for this path when all values are numeric.",
+        "field_number_min:<path>": "Minimum numeric value for this path when all values are numeric.",
+        "field_number_max:<path>": "Maximum numeric value for this path when all values are numeric.",
+        "field_bool_true_ratio:<path>": "True ratio for this path when all values are boolean.",
+    },
 }
 
 
@@ -95,11 +115,10 @@ def _conditions_to_text(rule: Dict[str, Any]) -> str:
         conditions = rule.get(key) or []
         if not conditions:
             continue
-        rendered = []
-        for condition in conditions:
-            rendered.append(
-                f"{condition.get('feature')} {condition.get('op', '==')} {condition.get('value')}"
-            )
+        rendered = [
+            f"{condition.get('feature')} {condition.get('op', '==')} {condition.get('value')}"
+            for condition in conditions
+        ]
         parts.append(f"{key}: " + "; ".join(rendered))
     return " / ".join(parts) if parts else "无条件"
 
@@ -188,23 +207,239 @@ def write_llm_rule_report(
     return output
 
 
-def _feature_rows(
-    records: List[TraceRecord],
-    final_answer_config: Any,
+def _json_excerpt(value: Any, max_chars: int) -> str:
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n...<truncated>"
+
+
+def _median(values: List[float]) -> float:
+    return round(statistics.median(values), 4) if values else 0.0
+
+
+def _numeric_stats(values: List[Any]) -> Dict[str, float] | None:
+    numbers: List[float] = []
+    for value in values:
+        if isinstance(value, bool):
+            continue
+        try:
+            numbers.append(float(value))
+        except (TypeError, ValueError):
+            pass
+    if not numbers:
+        return None
+    return {
+        "min": round(min(numbers), 4),
+        "median": _median(numbers),
+        "max": round(max(numbers), 4),
+    }
+
+
+def _row_signature(row: Dict[str, Any]) -> tuple[Any, ...]:
+    features = row["features"]
+    return (
+        features.get("has_error_text"),
+        features.get("has_final_answer"),
+        min(int(features.get("step_count", 0)), 20),
+        int(features.get("text_chars", 0)) // 500,
+        hash(features.get("trace_field_paths", "")) % 17,
+    )
+
+
+def _select_diverse_rows(rows: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    if limit <= 0 or not rows:
+        return []
+    selected: List[Dict[str, Any]] = []
+    seen_signatures: set[tuple[Any, ...]] = set()
+
+    sorted_rows = sorted(rows, key=lambda row: int(row["features"].get("text_chars", 0)), reverse=True)
+    priority_rows = [
+        *sorted(rows, key=lambda row: int(row["features"].get("error_count", 0)), reverse=True)[:2],
+        *sorted_rows[:2],
+        *sorted(rows, key=lambda row: int(row["features"].get("text_chars", 0)))[:2],
+        *rows,
+    ]
+    for row in priority_rows:
+        signature = _row_signature(row)
+        if signature in seen_signatures and len(selected) >= max(1, limit // 2):
+            continue
+        if row not in selected:
+            selected.append(row)
+            seen_signatures.add(signature)
+        if len(selected) >= limit:
+            return selected
+    return selected[:limit]
+
+
+def _select_prompt_rows(
+    rows: List[Dict[str, Any]],
+    training_scenario: str,
     max_samples: int,
 ) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for record in records[:max_samples]:
-        rows.append(
+    if training_scenario == "labeled":
+        grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            grouped[row.get("label") or "unlabeled"].append(row)
+        labels = [label for label in ("goodcase", "badcase") if grouped.get(label)]
+        if not labels:
+            return _select_diverse_rows(rows, max_samples)
+        per_label = max(1, max_samples // len(labels))
+        selected: List[Dict[str, Any]] = []
+        for label in labels:
+            selected.extend(_select_diverse_rows(grouped[label], per_label))
+        if len(selected) < max_samples:
+            selected.extend(row for row in _select_diverse_rows(rows, max_samples) if row not in selected)
+        return selected[:max_samples]
+    return _select_diverse_rows(rows, max_samples)
+
+
+def _extract_field_paths(features: Dict[str, Any]) -> List[str]:
+    raw = str(features.get("trace_field_paths", "")).strip()
+    return [line for line in raw.splitlines() if line.strip()]
+
+
+def _summarize_dataset(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    labels = Counter(row.get("label") or "unlabeled" for row in rows)
+    sources = Counter(row.get("source") or "" for row in rows)
+    splits = Counter(row.get("split") or "" for row in rows)
+    text_chars = [float(row["features"].get("text_chars", 0)) for row in rows]
+    step_counts = [float(row["features"].get("step_count", 0)) for row in rows]
+    field_counts = Counter()
+    for row in rows:
+        field_counts.update(_extract_field_paths(row["features"]))
+    return {
+        "sample_count": len(rows),
+        "labels": dict(labels),
+        "sources_top": dict(sources.most_common(10)),
+        "splits": dict(splits),
+        "text_chars": _numeric_stats(text_chars),
+        "step_count": _numeric_stats(step_counts),
+        "top_field_paths": dict(field_counts.most_common(80)),
+    }
+
+
+def _summarize_label_contrasts(rows: List[Dict[str, Any]], max_items: int = 40) -> List[Dict[str, Any]]:
+    grouped = {
+        "goodcase": [row for row in rows if row.get("label") == "goodcase"],
+        "badcase": [row for row in rows if row.get("label") == "badcase"],
+    }
+    if not grouped["goodcase"] or not grouped["badcase"]:
+        return []
+
+    paths = sorted(
+        set(path for row in rows for path in _extract_field_paths(row["features"]))
+    )
+    contrasts: List[Dict[str, Any]] = []
+    for path in paths:
+        good_present = sum(1 for row in grouped["goodcase"] if row["features"].get(f"field_exists:{path}") is True)
+        bad_present = sum(1 for row in grouped["badcase"] if row["features"].get(f"field_exists:{path}") is True)
+        good_rate = good_present / len(grouped["goodcase"])
+        bad_rate = bad_present / len(grouped["badcase"])
+        diff = bad_rate - good_rate
+        if abs(diff) >= 0.25:
+            contrasts.append(
+                {
+                    "field": path,
+                    "signal": "presence",
+                    "good_rate": round(good_rate, 3),
+                    "bad_rate": round(bad_rate, 3),
+                    "direction": "badcase" if diff > 0 else "goodcase",
+                }
+            )
+    return sorted(contrasts, key=lambda item: abs(item["bad_rate"] - item["good_rate"]), reverse=True)[:max_items]
+
+
+def _summarize_feature_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    stats: Dict[str, Any] = {}
+    for feature in FIXED_FEATURE_NAMES:
+        values = [row["features"].get(feature) for row in rows if feature in row["features"]]
+        if not values:
+            continue
+        numeric = _numeric_stats(values)
+        if numeric:
+            stats[feature] = numeric
+        else:
+            stats[feature] = dict(Counter(str(value) for value in values).most_common(8))
+    return stats
+
+
+def _compact_features(features: Dict[str, Any], max_dynamic_fields: int) -> Dict[str, Any]:
+    compact: Dict[str, Any] = {
+        key: features[key] for key in FIXED_FEATURE_NAMES if key in features
+    }
+    paths = _extract_field_paths(features)[:max_dynamic_fields]
+    compact["trace_field_paths"] = paths
+    for path in paths:
+        for prefix in (
+            "field_exists",
+            "field_count",
+            "field_nonempty_ratio",
+            "field_number_mean",
+            "field_number_min",
+            "field_number_max",
+            "field_bool_true_ratio",
+        ):
+            key = f"{prefix}:{path}"
+            if key in features:
+                compact[key] = features[key]
+        text_key = f"field_text:{path}"
+        if text_key in features:
+            text = str(features[text_key])
+            compact[text_key] = text[:300] + ("...<truncated>" if len(text) > 300 else "")
+    return compact
+
+
+def _build_rows(records: List[TraceRecord], final_answer_config: Any) -> List[Dict[str, Any]]:
+    return [
+        {
+            "name": record.name,
+            "label": record.label,
+            "source": record.source,
+            "split": record.split,
+            "trace": record.trace,
+            "features": extract_features(record, final_answer_config),
+        }
+        for record in records
+    ]
+
+
+def _prompt_payload(
+    records: List[TraceRecord],
+    *,
+    final_answer_config: Any,
+    training_scenario: str,
+    max_samples: int,
+    max_trace_chars: int,
+    max_dynamic_fields: int,
+) -> Dict[str, Any]:
+    rows = _build_rows(records, final_answer_config)
+    selected = _select_prompt_rows(rows, training_scenario, max_samples)
+    samples = []
+    for row in selected:
+        samples.append(
             {
-                "name": record.name,
-                "label": record.label,
-                "source": record.source,
-                "split": record.split,
-                "features": extract_features(record, final_answer_config),
+                "name": row["name"],
+                "label": row["label"],
+                "source": row["source"],
+                "split": row["split"],
+                "features": _compact_features(row["features"], max_dynamic_fields),
+                "trace_excerpt": _json_excerpt(row["trace"], max_trace_chars),
             }
         )
-    return rows
+    return {
+        "dataset_summary": _summarize_dataset(rows),
+        "fixed_feature_stats": _summarize_feature_stats(rows),
+        "label_contrasts": _summarize_label_contrasts(rows) if training_scenario == "labeled" else [],
+        "selected_samples": samples,
+        "selection_policy": {
+            "max_samples": max_samples,
+            "max_trace_chars_per_sample": max_trace_chars,
+            "max_dynamic_fields_per_sample": max_dynamic_fields,
+            "labeled_policy": "include both goodcase and badcase when available",
+            "diversity_policy": "prefer varied length, error counts, final-answer presence, and field-path signatures",
+        },
+    }
 
 
 def build_prompt_from_records(
@@ -213,6 +448,9 @@ def build_prompt_from_records(
     final_answer_config: Any,
     training_scenario: str,
     max_samples: int = 30,
+    max_prompt_chars: int = 60000,
+    max_trace_chars: int = 2000,
+    max_dynamic_fields: int = 80,
 ) -> str:
     if training_scenario not in {"no_train", "unlabeled", "labeled"}:
         raise ValueError(f"unsupported training scenario: {training_scenario}")
@@ -243,61 +481,74 @@ def build_prompt_from_records(
             {"name": "new_feature_name", "description": "Only if an important feature is missing."}
         ],
     }
-
     scenario_guidance = {
         "no_train": [
             "No training traces are provided.",
-            "Generate conservative generic rules from the feature definitions only.",
-            "Do not invent dataset-specific thresholds.",
+            "Generate conservative generic rules from feature definitions and general Agent trace failure modes only.",
+            "Do not invent business-field rules or dataset-specific thresholds.",
         ],
         "unlabeled": [
             "Training traces are unlabeled.",
-            "Generate anomaly-style rules from feature distributions.",
-            "Use dynamic field features when a concrete trace field appears informative.",
-            "Use lower weights for cohort-relative risk rules.",
+            "Use dataset summary, field frequencies, feature statistics, and diverse samples.",
+            "Generate anomaly-style rules. Use lower weights for cohort-relative risk rules.",
         ],
         "labeled": [
             "Training traces are labeled as goodcase or badcase.",
-            "Prefer rules that separate labeled badcase from labeled goodcase.",
-            "Actively inspect dynamic field features such as field_text:<path>, field_exists:<path>, and field_number_mean:<path>.",
-            "Do not memorize file names, source names, or split names.",
+            "Use label contrasts and selected examples from both labels.",
+            "Prefer rules that separate badcase from goodcase without memorizing file names, source names, or split names.",
         ],
     }
-
-    rows = _feature_rows(records, final_answer_config, max_samples) if training_scenario != "no_train" else []
-    return "\n".join(
-        [
-            "# LLM Rule Extraction Prompt",
-            "",
-            "You are generating explainable JSON rules for Agent trace classification.",
-            "Return only valid JSON matching the schema below. Do not include prose outside JSON.",
-            "",
-            f"Training scenario: {training_scenario}",
-            *[f"- {item}" for item in scenario_guidance[training_scenario]],
-            "",
-            "Goal:",
-            "- Classify traces as goodcase or badcase.",
-            "- Prefer conservative, interpretable rules.",
-            "- Use fixed feature names and any dynamic field feature names present in the training feature rows.",
-            "- Dynamic field rules are immediately executable if their feature names follow the field_*:<path> convention.",
-            "- If a useful signal cannot be expressed with existing fixed or dynamic field features, describe it in `proposed_features`; such proposed features are not executable until implemented.",
-            "- Also judge whether these traces expose a business final-answer field. If yes, include `final_answer_config` with `evidence_source: \"llm\"`.",
-            "",
-            "Allowed operators:",
-            "`==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `regex`, `truthy`, `falsey`",
-            "",
-            "Allowed features:",
-            json.dumps(FEATURE_DESCRIPTIONS, ensure_ascii=False, indent=2),
-            "",
-            "Required JSON schema:",
-            json.dumps(schema, ensure_ascii=False, indent=2),
-            "",
-            "Training feature rows:",
-            json.dumps(rows, ensure_ascii=False, indent=2),
-            "",
-            "Return JSON now.",
-        ]
+    payload = (
+        {}
+        if training_scenario == "no_train"
+        else _prompt_payload(
+            records,
+            final_answer_config=final_answer_config,
+            training_scenario=training_scenario,
+            max_samples=max_samples,
+            max_trace_chars=max_trace_chars,
+            max_dynamic_fields=max_dynamic_fields,
+        )
     )
+    lines = [
+        "# LLM Rule Extraction Prompt",
+        "",
+        "You are generating explainable JSON rules for Agent trace classification.",
+        "Return only valid JSON matching the schema. Do not include prose outside JSON.",
+        "",
+        f"Training scenario: {training_scenario}",
+        *[f"- {item}" for item in scenario_guidance[training_scenario]],
+        "",
+        "Important input design:",
+        "- The prompt may omit full traces when the train set is large.",
+        "- Use dataset_summary and label_contrasts before relying on individual sample excerpts.",
+        "- In labeled mode, selected_samples is balanced to include goodcase and badcase when available.",
+        "- Prefer dynamic field rules such as field_exists:<path>, field_text:<path>, or field_number_mean:<path> when a concrete trace field is informative.",
+        "- If a useful signal cannot be expressed with fixed or dynamic field features, put it in proposed_features; proposed_features are not executable in this run.",
+        "",
+        "Allowed operators:",
+        "`==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `regex`, `truthy`, `falsey`",
+        "",
+        "Feature vocabulary:",
+        json.dumps(FEATURE_DESCRIPTIONS, ensure_ascii=False, indent=2),
+        "",
+        "Required JSON schema:",
+        json.dumps(schema, ensure_ascii=False, indent=2),
+        "",
+        "Compressed training context:",
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        "",
+        "Return JSON now.",
+    ]
+    prompt = "\n".join(lines)
+    if len(prompt) <= max_prompt_chars:
+        return prompt
+    truncated_payload = dict(payload)
+    truncated_payload["selected_samples"] = truncated_payload.get("selected_samples", [])[: max(1, max_samples // 2)]
+    truncated_payload["truncation_note"] = f"Prompt exceeded {max_prompt_chars} chars; selected_samples were reduced."
+    lines[-3] = json.dumps(truncated_payload, ensure_ascii=False, indent=2)
+    prompt = "\n".join(lines)
+    return prompt[:max_prompt_chars] + "\n...<prompt truncated>"
 
 
 def _select_records(args: argparse.Namespace) -> List[TraceRecord]:
@@ -322,6 +573,9 @@ def build_prompt(args: argparse.Namespace) -> str:
         final_answer_config=final_answer_config,
         training_scenario=args.training_scenario,
         max_samples=args.max_samples,
+        max_prompt_chars=args.max_prompt_chars,
+        max_trace_chars=args.max_trace_chars,
+        max_dynamic_fields=args.max_dynamic_fields,
     )
 
 
@@ -348,7 +602,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="unlabeled",
         help="Type of training input shown to the LLM.",
     )
-    parser.add_argument("--max-samples", type=int, default=30, help="Maximum feature rows included in the prompt.")
+    parser.add_argument("--max-samples", type=int, default=30, help="Maximum representative samples included in the prompt.")
+    parser.add_argument("--max-prompt-chars", type=int, default=60000, help="Maximum prompt characters before truncation.")
+    parser.add_argument("--max-trace-chars", type=int, default=2000, help="Maximum raw trace excerpt characters per selected sample.")
+    parser.add_argument("--max-dynamic-fields", type=int, default=80, help="Maximum dynamic field paths included per selected sample.")
     parser.add_argument("--output", help="Optional prompt Markdown output path.")
     parser.add_argument("--call-llm", action="store_true", help="Call call_llm() after generating the prompt.")
     parser.add_argument("--llm-provider", help="Provider name passed to call_llm().")
@@ -400,7 +657,7 @@ def main(argv: List[str] | None = None) -> None:
             extra_args=_parse_llm_extra(args.llm_extra),
         )
         if not response:
-            raise RuntimeError("call_llm() returned empty output. Please implement scripts/llm_rule_prompt.py::call_llm().")
+            raise RuntimeError("call_llm() returned empty output. Please implement scripts/llm_rule_prompt.py::call_llm.")
         llm_output_path = llm_output_path or "llm_response.json"
         Path(llm_output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(llm_output_path).write_text(response, encoding="utf-8")
