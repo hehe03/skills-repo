@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
 from features import discover_default_final_answer_config, extract_features, load_final_answer_config
-from llm_rule_prompt import build_prompt as build_llm_prompt
-from llm_rule_prompt import call_llm, parse_llm_response, write_llm_rule_report
+from llm_rule_prompt import build_prompt_from_records, call_llm, parse_llm_response, write_llm_rule_report
 from metrics import confusion_and_scores
 from reporting import default_report_path, write_report
 from rule_engine import classify_features, load_rules
@@ -16,10 +16,45 @@ from trace_io import TraceRecord, load_records, records_with_labels, split_recor
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-GENERAL_RULES = SCRIPT_DIR / "rules" / "static" / "general_rules.json"
-UNLABELED_RULES = SCRIPT_DIR / "rules" / "dynamic" / "unlabeled_rules.json"
-LABELED_RULES = SCRIPT_DIR / "rules" / "dynamic" / "labeled_rules.json"
-LLM_RULES = SCRIPT_DIR / "rules" / "dynamic" / "llm_rules.json"
+STATIC_RULE_DIR = SCRIPT_DIR / "rules" / "static"
+DYNAMIC_RULE_DIR = SCRIPT_DIR / "rules" / "dynamic"
+NON_LLM_RULE_DIR = DYNAMIC_RULE_DIR / "non_llm"
+LLM_RULE_DIR = DYNAMIC_RULE_DIR / "llm"
+
+GENERAL_RULES = STATIC_RULE_DIR / "general_rules.json"
+NON_LLM_UNLABELED_RULES = NON_LLM_RULE_DIR / "unlabeled_rules.json"
+NON_LLM_LABELED_RULES = NON_LLM_RULE_DIR / "labeled_rules.json"
+LLM_NO_TRAIN_RULES = LLM_RULE_DIR / "no_train_rules.json"
+LLM_UNLABELED_RULES = LLM_RULE_DIR / "unlabeled_rules.json"
+LLM_LABELED_RULES = LLM_RULE_DIR / "labeled_rules.json"
+
+LEGACY_UNLABELED_RULES = DYNAMIC_RULE_DIR / "unlabeled_rules.json"
+LEGACY_LABELED_RULES = DYNAMIC_RULE_DIR / "labeled_rules.json"
+LEGACY_LLM_RULES = DYNAMIC_RULE_DIR / "llm_rules.json"
+
+METHODS = {
+    "non_llm_no_train",
+    "non_llm_unlabeled",
+    "non_llm_labeled",
+    "llm_no_train",
+    "llm_unlabeled",
+    "llm_labeled",
+}
+
+LEGACY_ALIASES = {
+    "general": "non_llm_no_train",
+    "unlabeled": "non_llm_unlabeled",
+    "labeled": "non_llm_labeled",
+}
+
+
+@dataclass
+class DatasetBundle:
+    train_records: List[TraceRecord]
+    test_records: List[TraceRecord]
+    all_records: List[TraceRecord]
+    train_source: str
+    test_source: str
 
 
 def _has_both_labels(records: List[TraceRecord]) -> bool:
@@ -27,18 +62,102 @@ def _has_both_labels(records: List[TraceRecord]) -> bool:
     return {"goodcase", "badcase"}.issubset(labels)
 
 
-def _fit_records(records: List[TraceRecord]) -> List[TraceRecord]:
-    train = split_records(records, "train")
-    return train or records
+def _load_optional_records(path: str | None, metadata: str | None) -> List[TraceRecord]:
+    if not path:
+        return []
+    return load_records(path, metadata)
 
 
-def _eval_records(records: List[TraceRecord], eval_split: str | None = None) -> List[TraceRecord]:
-    if eval_split:
-        selected = split_records(records, eval_split)
-        if not selected:
-            raise ValueError(f"metadata split column has no samples for eval split: {eval_split}")
-        return selected
-    return records
+def _select_by_split(records: List[TraceRecord], split: str, *, role: str) -> List[TraceRecord]:
+    selected = split_records(records, split)
+    if not selected:
+        raise ValueError(f"metadata split column has no samples for {role} split: {split}")
+    return selected
+
+
+def prepare_datasets(args: argparse.Namespace) -> DatasetBundle:
+    all_records = load_records(args.trace_path, args.metadata)
+
+    if args.eval_split:
+        test_records = _select_by_split(all_records, args.eval_split, role="eval")
+        test_source = f"trace_path split={args.eval_split}"
+    else:
+        test_records = all_records
+        test_source = "trace_path all samples"
+
+    explicit_train = bool(args.train_trace_path)
+    train_records = _load_optional_records(args.train_trace_path, args.train_metadata or args.metadata)
+    train_source = "none"
+    if explicit_train:
+        train_source = f"train_trace_path={args.train_trace_path}"
+        if args.train_split:
+            train_records = _select_by_split(train_records, args.train_split, role="train")
+            train_source += f", split={args.train_split}"
+    elif args.train_split:
+        train_records = _select_by_split(all_records, args.train_split, role="train")
+        train_source = f"trace_path split={args.train_split}"
+
+    return DatasetBundle(
+        train_records=train_records,
+        test_records=test_records,
+        all_records=all_records,
+        train_source=train_source,
+        test_source=test_source,
+    )
+
+
+def method_family(method: str) -> str:
+    return "llm" if method.startswith("llm_") else "non_llm"
+
+
+def method_training_scenario(method: str) -> str:
+    if method.endswith("_no_train"):
+        return "no_train"
+    if method.endswith("_unlabeled"):
+        return "unlabeled"
+    if method.endswith("_labeled"):
+        return "labeled"
+    raise ValueError(f"unsupported method: {method}")
+
+
+def _llm_auto_method(bundle: DatasetBundle) -> str:
+    if _has_both_labels(records_with_labels(bundle.train_records)):
+        return "llm_labeled"
+    if bundle.train_records:
+        return "llm_unlabeled"
+    return "llm_no_train"
+
+
+def parse_methods(value: str | None, bundle: DatasetBundle | None = None) -> List[str]:
+    if not value:
+        return []
+    methods: List[str] = []
+    for item in value.split(","):
+        raw = item.strip().lower()
+        if not raw:
+            continue
+        if raw == "all":
+            for candidate in (
+                "non_llm_no_train",
+                "non_llm_unlabeled",
+                "non_llm_labeled",
+                "llm_no_train",
+                "llm_unlabeled",
+                "llm_labeled",
+            ):
+                if candidate not in methods:
+                    methods.append(candidate)
+            continue
+        if raw == "llm":
+            if bundle is None:
+                raise ValueError("llm alias requires loaded train/test data")
+            raw = _llm_auto_method(bundle)
+        method = LEGACY_ALIASES.get(raw, raw)
+        if method not in METHODS:
+            raise ValueError(f"unsupported method: {raw}")
+        if method not in methods:
+            methods.append(method)
+    return methods
 
 
 def _parse_llm_extra(items: List[str]) -> Dict[str, Any]:
@@ -51,134 +170,158 @@ def _parse_llm_extra(items: List[str]) -> Dict[str, Any]:
     return extra_args
 
 
-def _write_llm_rules(payload: Dict[str, Any], output_path: Path) -> int:
+def _write_rules_payload(path: Path, payload: Dict[str, Any]) -> int:
     rules = payload.get("rules") or []
     if not isinstance(rules, list):
-        raise ValueError("LLM response must contain a JSON array field named 'rules'")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+        raise ValueError("rule payload must contain a JSON array field named 'rules'")
+    path.parent.mkdir(parents=True, exist_ok=True)
     saved_payload = {
         "rules": rules,
         "final_answer_config": payload.get("final_answer_config", {}),
         "proposed_features": payload.get("proposed_features", []),
-        "note": "Generated from call_llm() by scripts/run_experiments.py.",
+        "note": "Generated by scripts/run_experiments.py.",
     }
-    output_path.write_text(json.dumps(saved_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(saved_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return len(rules)
 
 
-def generate_llm_rules(args: argparse.Namespace) -> str:
-    prompt_args = argparse.Namespace(
-        trace_path=args.trace_path,
-        metadata=args.metadata,
-        split=args.llm_prompt_split,
+def _copy_payload(source: Path, target: Path) -> None:
+    if source.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def _validate_train_data(method: str, train_records: List[TraceRecord]) -> None:
+    scenario = method_training_scenario(method)
+    if scenario == "no_train":
+        return
+    if not train_records:
+        raise ValueError(
+            f"{method} requires training traces. Use --train-trace-path or --train-split."
+        )
+    if scenario == "labeled" and not _has_both_labels(records_with_labels(train_records)):
+        raise ValueError(
+            f"{method} requires labeled train traces containing both goodcase and badcase."
+        )
+
+
+def rules_path_for_method(method: str) -> Path:
+    mapping = {
+        "non_llm_no_train": GENERAL_RULES,
+        "non_llm_unlabeled": NON_LLM_UNLABELED_RULES,
+        "non_llm_labeled": NON_LLM_LABELED_RULES,
+        "llm_no_train": LLM_NO_TRAIN_RULES,
+        "llm_unlabeled": LLM_UNLABELED_RULES,
+        "llm_labeled": LLM_LABELED_RULES,
+    }
+    return mapping[method]
+
+
+def rule_paths_for_method(method: str) -> List[Path]:
+    if method == "non_llm_no_train":
+        return [GENERAL_RULES]
+    return [GENERAL_RULES, rules_path_for_method(method)]
+
+
+def generate_non_llm_rules(
+    method: str,
+    train_records: List[TraceRecord],
+    final_answer_config: Any,
+) -> str | None:
+    if method == "non_llm_no_train":
+        return None
+    _validate_train_data(method, train_records)
+    if method == "non_llm_unlabeled":
+        rules = generate_unlabeled_rules(train_records, NON_LLM_UNLABELED_RULES, final_answer_config)
+        _copy_payload(NON_LLM_UNLABELED_RULES, LEGACY_UNLABELED_RULES)
+    elif method == "non_llm_labeled":
+        rules = generate_labeled_rules(records_with_labels(train_records), NON_LLM_LABELED_RULES, final_answer_config)
+        _copy_payload(NON_LLM_LABELED_RULES, LEGACY_LABELED_RULES)
+    else:
+        raise ValueError(f"not a non-LLM method: {method}")
+    print(f"Generated {method} rules: {rules_path_for_method(method)} ({len(rules)} rules)")
+    return str(rules_path_for_method(method))
+
+
+def generate_llm_rules(
+    method: str,
+    train_records: List[TraceRecord],
+    final_answer_config: Any,
+    args: argparse.Namespace,
+) -> str:
+    _validate_train_data(method, train_records)
+    scenario = method_training_scenario(method)
+    prompt_records = train_records if scenario != "no_train" else []
+    prompt = build_prompt_from_records(
+        prompt_records,
+        final_answer_config=final_answer_config,
+        training_scenario=scenario,
         max_samples=args.llm_max_samples,
-        final_answer_config=args.final_answer_config,
-        final_answer_item=args.final_answer_item,
     )
-    prompt = build_llm_prompt(prompt_args)
-    prompt_path = Path(args.llm_prompt_output) if args.llm_prompt_output else Path(args.output_dir) / "llm_rule_prompt.md"
+    prompt_path = (
+        Path(args.llm_prompt_output)
+        if args.llm_prompt_output
+        else Path(args.output_dir) / f"{method}_prompt.md"
+    )
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
 
-    response = call_llm(prompt)
+    response = call_llm(
+        prompt,
+        provider=args.llm_provider,
+        model=args.llm_model,
+        temperature=args.llm_temperature,
+        extra_args=_parse_llm_extra(args.llm_extra),
+    )
     if not response:
         raise RuntimeError(
-            "LLM method was selected, so call_llm() was triggered but returned empty output. "
+            f"{method} was selected, so call_llm() was triggered but returned empty output. "
             "Please implement scripts/llm_rule_prompt.py::call_llm()."
         )
 
-    llm_output_path = Path(args.llm_output) if args.llm_output else Path(args.output_dir) / "llm_response.json"
+    llm_output_path = (
+        Path(args.llm_output)
+        if args.llm_output
+        else Path(args.output_dir) / f"{method}_response.json"
+    )
     llm_output_path.parent.mkdir(parents=True, exist_ok=True)
     llm_output_path.write_text(response, encoding="utf-8")
 
     payload = parse_llm_response(response)
-    rule_count = _write_llm_rules(payload, LLM_RULES)
-    report_path = Path(args.llm_report_output) if args.llm_report_output else Path(args.output_dir) / "llm_rule_repoert.md"
+    output_rules = rules_path_for_method(method)
+    rule_count = _write_rules_payload(output_rules, payload)
+    if method == "llm_labeled":
+        _copy_payload(output_rules, LEGACY_LLM_RULES)
+
+    report_path = (
+        Path(args.llm_report_output)
+        if args.llm_report_output
+        else Path(args.output_dir) / f"{method}_llm_rule_repoert.md"
+    )
     write_llm_rule_report(
         report_path,
         llm_output_path=str(llm_output_path),
-        rules_path=LLM_RULES,
+        rules_path=output_rules,
         prompt_path=str(prompt_path),
     )
-    print(f"Generated LLM dynamic rules: {LLM_RULES} ({rule_count} rules)")
+    print(f"Generated {method} rules: {output_rules} ({rule_count} rules)")
     print(f"Wrote LLM prompt: {prompt_path}")
     print(f"Wrote LLM response: {llm_output_path}")
     print(f"Wrote LLM rule report: {report_path}")
-    return str(LLM_RULES)
+    return str(output_rules)
 
 
-def maybe_generate_rules(
+def train_method(
+    method: str,
+    bundle: DatasetBundle,
+    final_answer_config: Any,
     args: argparse.Namespace,
-    records: List[TraceRecord],
-    methods: List[str] | None = None,
 ) -> List[str]:
-    mode = args.generate_dynamic_rules
-    target_methods = methods or [args.rule_layer]
-    generated: List[str] = []
-    fit_records = _fit_records(records)
-    labeled_fit = records_with_labels(fit_records)
-    final_answer_config = discover_default_final_answer_config(
-        fit_records,
-        load_final_answer_config(args.final_answer_config, args.final_answer_item),
-    )
-
-    do_unlabeled = mode in {"unlabeled", "both"} or (
-        mode == "auto" and any(method in {"unlabeled", "all"} for method in target_methods) and len(fit_records) >= 3
-    )
-    do_labeled = mode in {"labeled", "both"} or (
-        mode == "auto" and any(method in {"labeled", "all"} for method in target_methods) and _has_both_labels(labeled_fit)
-    )
-    do_llm = any(method in {"llm", "all"} for method in target_methods)
-
-    if do_unlabeled:
-        rules = generate_unlabeled_rules(fit_records, UNLABELED_RULES, final_answer_config)
-        generated.append(str(UNLABELED_RULES))
-        print(f"Generated unlabeled dynamic rules: {UNLABELED_RULES} ({len(rules)} rules)")
-    if do_labeled:
-        rules = generate_labeled_rules(labeled_fit, LABELED_RULES, final_answer_config)
-        generated.append(str(LABELED_RULES))
-        print(f"Generated labeled dynamic rules: {LABELED_RULES} ({len(rules)} rules)")
-    if do_llm:
-        generated.append(generate_llm_rules(args))
-    return generated
-
-
-def rule_paths_for_layer(layer: str) -> List[Path]:
-    paths = [GENERAL_RULES]
-    if layer in {"unlabeled", "all"}:
-        paths.append(UNLABELED_RULES)
-    if layer in {"labeled", "all"}:
-        paths.append(LABELED_RULES)
-    if layer in {"llm", "all"}:
-        paths.append(LLM_RULES)
-    return paths
-
-
-def parse_methods(value: str | None) -> List[str]:
-    if not value:
-        return []
-    methods: List[str] = []
-    for item in value.split(","):
-        method = item.strip().lower()
-        if not method:
-            continue
-        if method == "all":
-            for candidate in ("general", "unlabeled", "labeled", "llm"):
-                if candidate not in methods:
-                    methods.append(candidate)
-            continue
-        if method not in {"general", "unlabeled", "labeled", "llm"}:
-            raise ValueError(f"unsupported method: {method}")
-        if method not in methods:
-            methods.append(method)
-    return methods
-
-
-def validate_method_requirements(args: argparse.Namespace, methods: List[str]) -> None:
-    if args.metadata is None and (
-        "labeled" in methods or args.generate_dynamic_rules in {"labeled", "both"}
-    ):
-        raise ValueError("metadata is required for labeled/supervised rule generation or evaluation")
+    family = method_family(method)
+    if family == "non_llm":
+        generated = generate_non_llm_rules(method, bundle.train_records, final_answer_config)
+        return [generated] if generated else []
+    return [generate_llm_rules(method, bundle.train_records, final_answer_config, args)]
 
 
 def predict_with_method(
@@ -214,20 +357,33 @@ def predict_with_method(
     return results
 
 
-def run_experiment(args: argparse.Namespace) -> Path:
-    validate_method_requirements(args, [args.rule_layer])
-    records = load_records(args.trace_path, args.metadata)
-    generated_rule_files = maybe_generate_rules(args, records, [args.rule_layer])
-    rules = load_rules(rule_paths_for_layer(args.rule_layer))
-    eval_records = _eval_records(records, args.eval_split)
+def _method_notes(
+    method: str,
+    bundle: DatasetBundle,
+    generated_rule_files: List[str],
+) -> List[str]:
+    scenario = method_training_scenario(method)
+    notes = [
+        f"Method family: `{method_family(method)}`",
+        f"Training scenario: `{scenario}`",
+        f"Train source: `{bundle.train_source}`",
+        f"Train samples: {len(bundle.train_records) if scenario != 'no_train' else 0}",
+        f"Test source: `{bundle.test_source}`",
+        f"Test samples: {len(bundle.test_records)}",
+    ]
+    notes.extend(f"Generated dynamic rule file: `{path}`" for path in generated_rule_files)
+    return notes
+
+
+def run_single_method(args: argparse.Namespace, method: str, bundle: DatasetBundle) -> Path:
     final_answer_config = discover_default_final_answer_config(
-        records,
+        bundle.train_records or bundle.all_records,
         load_final_answer_config(args.final_answer_config, args.final_answer_item),
     )
+    generated_rule_files = train_method(method, bundle, final_answer_config, args)
+    rules = load_rules(rule_paths_for_method(method))
+    results = predict_with_method(bundle.test_records, rules, final_answer_config, args)
 
-    results = predict_with_method(eval_records, rules, final_answer_config, args)
-
-    method = f"rule_{args.rule_layer}"
     output_path = Path(args.output) if args.output else default_report_path(args.output_dir, method)
     return write_report(
         output_path,
@@ -237,25 +393,24 @@ def run_experiment(args: argparse.Namespace) -> Path:
         rules=rules,
         results=results,
         max_rows=args.max_rows,
-        notes=[f"Generated dynamic rule file: `{path}`" for path in generated_rule_files],
+        notes=_method_notes(method, bundle, generated_rule_files),
     )
 
 
-def run_methods_comparison(args: argparse.Namespace, methods: List[str]) -> Path:
-    validate_method_requirements(args, methods)
-    records = load_records(args.trace_path, args.metadata)
-    generated_rule_files = maybe_generate_rules(args, records, methods)
-    eval_records = _eval_records(records, args.eval_split)
+def run_methods_comparison(args: argparse.Namespace, methods: List[str], bundle: DatasetBundle) -> Path:
     final_answer_config = discover_default_final_answer_config(
-        records,
+        bundle.train_records or bundle.all_records,
         load_final_answer_config(args.final_answer_config, args.final_answer_item),
     )
+    generated_by_method: Dict[str, List[str]] = {}
     results_by_method: Dict[str, List[Dict[str, Any]]] = {}
     rules_by_method: Dict[str, List[Dict[str, Any]]] = {}
+
     for method in methods:
-        rules = load_rules(rule_paths_for_layer(method))
+        generated_by_method[method] = train_method(method, bundle, final_answer_config, args)
+        rules = load_rules(rule_paths_for_method(method))
         rules_by_method[method] = rules
-        results_by_method[method] = predict_with_method(eval_records, rules, final_answer_config, args)
+        results_by_method[method] = predict_with_method(bundle.test_records, rules, final_answer_config, args)
 
     output_path = Path(args.output) if args.output else default_report_path(args.output_dir, "methods_comparison")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -264,17 +419,25 @@ def run_methods_comparison(args: argparse.Namespace, methods: List[str]) -> Path
         "",
         f"- Trace path: `{args.trace_path}`",
         f"- Metadata: `{args.metadata}`" if args.metadata else "- Metadata: none",
-        f"- Eval split: `{args.eval_split}`" if args.eval_split else "- Eval split: all samples",
+        f"- Train source: `{bundle.train_source}`",
+        f"- Train samples: {len(bundle.train_records)}",
+        f"- Test source: `{bundle.test_source}`",
+        f"- Test samples: {len(bundle.test_records)}",
         f"- Methods: {', '.join(methods)}",
-        f"- Samples evaluated: {len(eval_records)}",
         "",
+        "## Method Structure",
+        "",
+        "| method | family | training scenario | rules loaded | generated rule files |",
+        "|---|---|---|---:|---|",
     ]
-    if generated_rule_files:
-        lines.append("## Generated Dynamic Rules")
-        lines.append("")
-        for path in generated_rule_files:
-            lines.append(f"- `{path}`")
-        lines.append("")
+    for method in methods:
+        generated = ", ".join(f"`{path}`" for path in generated_by_method[method]) or ""
+        lines.append(
+            f"| {method} | {method_family(method)} | {method_training_scenario(method)} | "
+            f"{len(rules_by_method[method])} | {generated} |"
+        )
+    lines.append("")
+
     first_results = next(iter(results_by_method.values()), [])
     policies: Dict[str, int] = {}
     for row in first_results:
@@ -316,7 +479,7 @@ def run_methods_comparison(args: argparse.Namespace, methods: List[str]) -> Path
         method: {row["name"]: row for row in rows}
         for method, rows in results_by_method.items()
     }
-    for record in eval_records[: args.max_rows]:
+    for record in bundle.test_records[: args.max_rows]:
         row_cells = [f"`{record.name}`", record.label or ""]
         for method in methods:
             prediction = by_method_name[method].get(record.name, {})
@@ -325,7 +488,7 @@ def run_methods_comparison(args: argparse.Namespace, methods: List[str]) -> Path
                 f"(bad={prediction.get('bad_score', '')}, good={prediction.get('good_score', '')})"
             )
         lines.append("| " + " | ".join(row_cells) + " |")
-    if len(eval_records) > args.max_rows:
+    if len(bundle.test_records) > args.max_rows:
         lines.append(f"| ... | ... | {' | '.join('...' for _ in methods)} |")
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return output_path
@@ -333,35 +496,52 @@ def run_methods_comparison(args: argparse.Namespace, methods: List[str]) -> Path
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run trace sorting experiments and write a Markdown report named by method and time."
+        description="Train rule methods and test Agent trace goodcase/badcase classification."
     )
-    parser.add_argument("trace_path", help="Trace JSON file or directory containing JSON trace files.")
+    parser.add_argument("trace_path", help="Test trace JSON file or directory, unless --eval-split selects a subset.")
     parser.add_argument(
         "--metadata",
-        help="Optional metadata CSV with columns name,label,source,split. Required only for labeled/supervised methods.",
+        help="Optional test/all metadata CSV with columns name,label,source,split.",
     )
     parser.add_argument(
+        "--train-trace-path",
+        help="Optional separate training trace JSON file or directory.",
+    )
+    parser.add_argument(
+        "--train-metadata",
+        help="Optional training metadata CSV. Defaults to --metadata when omitted.",
+    )
+    parser.add_argument(
+        "--train-split",
+        help="Split value used as training data. Common value: train. If omitted and no --train-trace-path is given, no training data is used.",
+    )
+    parser.add_argument(
+        "--eval-split",
+        help="Split value used as test/evaluation data. If omitted, all samples from trace_path are tested.",
+    )
+    parser.add_argument(
+        "--method",
         "--rule-layer",
-        choices=["general", "unlabeled", "labeled", "llm", "all"],
-        default="general",
-        help="Single rule layer to evaluate when --methods is not set.",
+        dest="method",
+        default="non_llm_no_train",
+        help="Single method to run when --methods is not set. Legacy aliases: general, unlabeled, labeled, llm.",
     )
     parser.add_argument(
         "--methods",
-        help="Comma-separated methods to compare in one report, e.g. general,unlabeled,llm or all.",
+        help=(
+            "Comma-separated methods to compare. Valid methods: non_llm_no_train, "
+            "non_llm_unlabeled, non_llm_labeled, llm_no_train, llm_unlabeled, llm_labeled. "
+            "Legacy aliases general, unlabeled, labeled, llm and all are supported."
+        ),
     )
     parser.add_argument(
         "--generate-dynamic-rules",
         choices=["none", "unlabeled", "labeled", "both", "auto"],
         default="auto",
-        help="Generate dynamic rules before evaluation.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--bad-threshold", type=float, default=0.60)
     parser.add_argument("--good-threshold", type=float, default=0.50)
-    parser.add_argument(
-        "--eval-split",
-        help="Optional metadata split value to evaluate. If omitted, all samples are evaluated.",
-    )
     parser.add_argument("--output-dir", default="./results", help="Directory used for auto-named Markdown reports.")
     parser.add_argument("--output", help="Explicit Markdown output file path. Overrides --output-dir auto naming.")
     parser.add_argument("--max-rows", type=int, default=200)
@@ -374,8 +554,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="Business-specific final answer key:value pattern. Use * as a wildcard. Can be repeated.",
     )
-    parser.add_argument("--llm-provider", help="Provider name passed to call_llm() when llm method is selected.")
-    parser.add_argument("--llm-model", help="Model name passed to call_llm() when llm method is selected.")
+    parser.add_argument("--llm-provider", help="Provider name passed to call_llm() when an LLM method is selected.")
+    parser.add_argument("--llm-model", help="Model name passed to call_llm() when an LLM method is selected.")
     parser.add_argument("--llm-temperature", type=float, default=0.0, help="Temperature passed to call_llm().")
     parser.add_argument(
         "--llm-extra",
@@ -383,25 +563,30 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Extra key=value argument passed to call_llm(). Can be repeated.",
     )
-    parser.add_argument("--llm-output", help="Path for raw LLM response JSON. Defaults to <output-dir>/llm_response.json.")
-    parser.add_argument("--llm-prompt-output", help="Path for generated LLM prompt. Defaults to <output-dir>/llm_rule_prompt.md.")
-    parser.add_argument("--llm-report-output", help="Path for Chinese LLM rule report. Defaults to <output-dir>/llm_rule_repoert.md.")
-    parser.add_argument("--llm-prompt-split", help="Optional metadata split used when building the LLM prompt.")
-    parser.add_argument("--llm-max-samples", type=int, default=30, help="Maximum feature rows included in the LLM prompt.")
+    parser.add_argument("--llm-output", help="Path for raw LLM response JSON.")
+    parser.add_argument("--llm-prompt-output", help="Path for generated LLM prompt.")
+    parser.add_argument("--llm-report-output", help="Path for Chinese LLM rule report.")
+    parser.add_argument("--llm-max-samples", type=int, default=30, help="Maximum train feature rows included in the LLM prompt.")
     return parser
 
 
 def main(argv: List[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    methods = parse_methods(args.methods)
-    report_path = run_methods_comparison(args, methods) if methods else run_experiment(args)
+    bundle = prepare_datasets(args)
+    methods = parse_methods(args.methods, bundle) if args.methods else parse_methods(args.method, bundle)
+    if not methods:
+        raise ValueError("No method selected.")
+    report_path = (
+        run_methods_comparison(args, methods, bundle)
+        if len(methods) > 1
+        else run_single_method(args, methods[0], bundle)
+    )
     print(f"Wrote report: {report_path}")
 
 
 if __name__ == "__main__":
     # You may write parameters here when running this file from an IDE.
     # Example:
-    SCRIPT_ARGS = [r"D:\Data\agent\trace\all", "--metadata", r"D:\Code\github\hehe03\skills-repo\高交all.csv",
-                   "--methods", "llm"]
-    # SCRIPT_ARGS = None
+    # SCRIPT_ARGS = [r".\traces", "--method", "non_llm_no_train", "--output-dir", r".\results"]
+    SCRIPT_ARGS = None
     main(SCRIPT_ARGS)

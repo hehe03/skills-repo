@@ -12,18 +12,18 @@ from trace_io import load_records
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 GENERAL_RULES = SCRIPT_DIR / "rules" / "static" / "general_rules.json"
-UNLABELED_RULES = SCRIPT_DIR / "rules" / "dynamic" / "unlabeled_rules.json"
-LABELED_RULES = SCRIPT_DIR / "rules" / "dynamic" / "labeled_rules.json"
-LLM_RULES = SCRIPT_DIR / "rules" / "dynamic" / "llm_rules.json"
+UNLABELED_RULES = SCRIPT_DIR / "rules" / "dynamic" / "non_llm" / "unlabeled_rules.json"
+LABELED_RULES = SCRIPT_DIR / "rules" / "dynamic" / "non_llm" / "labeled_rules.json"
+LLM_RULES = SCRIPT_DIR / "rules" / "dynamic" / "llm" / "labeled_rules.json"
 
 
 def rule_paths_for_layer(layer: str) -> List[Path]:
     paths = [GENERAL_RULES]
-    if layer in {"unlabeled", "all"}:
+    if layer in {"unlabeled", "non_llm_unlabeled", "all"}:
         paths.append(UNLABELED_RULES)
-    if layer in {"labeled", "all"}:
+    if layer in {"labeled", "non_llm_labeled", "all"}:
         paths.append(LABELED_RULES)
-    if layer in {"llm", "all"}:
+    if layer in {"llm", "llm_labeled", "all"}:
         paths.append(LLM_RULES)
     return paths
 
@@ -69,7 +69,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--metadata", help="Optional metadata CSV with name,label,source,split columns.")
     parser.add_argument(
         "--rule-layer",
-        choices=["general", "unlabeled", "labeled", "llm", "all"],
+        choices=[
+            "general",
+            "unlabeled",
+            "labeled",
+            "llm",
+            "non_llm_no_train",
+            "non_llm_unlabeled",
+            "non_llm_labeled",
+            "llm_labeled",
+            "all",
+        ],
         default="general",
         help="Rule layer to load. Defaults to generic static rules.",
     )
