@@ -26,6 +26,34 @@ def _rule_summary(rules: Iterable[Dict[str, Any]]) -> List[str]:
     return lines
 
 
+def _final_answer_summary(results: List[Dict[str, Any]]) -> List[str]:
+    if not results:
+        return ["- Final answer policy: no samples"]
+    policies: Dict[str, int] = {}
+    sources: Dict[str, int] = {}
+    for row in results:
+        policy = (
+            f"{row.get('final_answer_evidence_source', 'none')}/"
+            f"{row.get('final_answer_evidence_strength', 'none')}:"
+            f"{row.get('final_answer_adopted_fields') or 'none'}"
+        )
+        source = row.get("final_answer_source") or "none"
+        policies[policy] = policies.get(policy, 0) + 1
+        sources[source] = sources.get(source, 0) + 1
+    lines = ["## Final Answer Policy", ""]
+    lines.append("| policy | samples |")
+    lines.append("|---|---:|")
+    for policy, count in sorted(policies.items()):
+        lines.append(f"| `{policy}` | {count} |")
+    lines.append("")
+    lines.append("| matched source | samples |")
+    lines.append("|---|---:|")
+    for source, count in sorted(sources.items()):
+        lines.append(f"| `{source}` | {count} |")
+    lines.append("")
+    return lines
+
+
 def write_report(
     path: str | Path,
     *,
@@ -47,6 +75,7 @@ def write_report(
     lines.append(f"- Samples evaluated: {len(results)}")
     lines.append(f"- Rules loaded: {len(rules)}")
     lines.append("")
+    lines.extend(_final_answer_summary(results))
     if metrics["count"]:
         lines.append("## Metrics")
         lines.append("")

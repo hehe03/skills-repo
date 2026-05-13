@@ -285,7 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="When comparing general methods, show only samples whose predictions differ.",
     )
-    parser.add_argument("--output-dir", default=".", help="Directory for timestamped Markdown reports.")
+    parser.add_argument("--output-dir", default="./results", help="Directory for timestamped Markdown reports.")
     parser.add_argument("--output", help="Explicit Markdown output path. Overrides method+time naming.")
     parser.add_argument("--max-rows", type=int, default=200)
     parser.add_argument(
