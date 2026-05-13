@@ -157,6 +157,8 @@ python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv
 python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv> --rule-layer all --generate-dynamic-rules auto
 ```
 
+`run_experiments.py` 默认 `--generate-dynamic-rules auto`。当 `--rule-layer` 或 `--methods` 包含 `unlabeled` 时，且可用样本不少于 3 条，会自动生成 `unlabeled_rules.json`；当包含 `labeled` 且训练/可用标注样本同时包含 `goodcase` 和 `badcase` 时，会自动生成 `labeled_rules.json`。
+
 常用参数：
 
 - `--bad-threshold`：判为 badcase 的最低风险分，默认 `0.60`。

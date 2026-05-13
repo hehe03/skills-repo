@@ -224,7 +224,7 @@ bad_score >= 0.60 且 bad_score >= good_score -> badcase
 
 1. 对输入样本逐条抽取特征。
 2. 对风险特征计算分布，例如 `step_count`、`empty_result_ratio`、`max_consecutive_same_action`、`error_count`。
-3. 取高分位阈值，默认倾向于保守识别异常样本。
+3. 取 90% 分位阈值；比例特征阈值不低于 `0.50`，计数特征阈值不低于 `1`，默认倾向于保守识别异常样本。
 4. 生成规则，例如 `empty_result_ratio >= 0.75` 或 `max_consecutive_same_action >= 4`。
 5. 如果样本群中普遍存在最终回答，则为缺少最终回答的 trace 生成额外风险规则。
 
@@ -238,7 +238,7 @@ bad_score >= 0.60 且 bad_score >= good_score -> badcase
 
 1. 只使用 `split=train` 的样本；如果没有 train，则退回使用全部有标注样本。
 2. 分别计算 goodcase 与 badcase 的特征均值。
-3. 对风险特征，如果 badcase 均值显著高于 goodcase 均值，就在两类均值之间取阈值并生成 badcase 规则。
+3. 对风险特征，如果 badcase 均值显著高于 goodcase 均值，就在两类均值之间取阈值并生成 badcase 规则；比例特征均值差至少 `0.10`，计数特征均值差至少 `0.75`。
 4. 对正向特征，如果 goodcase 明显更常见，例如 `has_final_answer`，则生成 goodcase 支持规则。
 5. 生成的规则用于 test 集或待分类样本。
 
@@ -373,10 +373,22 @@ python .\scripts\run_experiments.py .\traces --rule-layer general
 python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --rule-layer unlabeled --generate-dynamic-rules unlabeled
 ```
 
+默认 `--generate-dynamic-rules` 是 `auto`，所以下面命令也会在样本数不少于 3 条时自动生成 `scripts/rules/dynamic/unlabeled_rules.json`：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --rule-layer unlabeled
+```
+
 生成并使用有标注动态规则：
 
 ```powershell
 python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --rule-layer labeled --generate-dynamic-rules labeled
+```
+
+默认 `auto` 下，如果 metadata 中 train 或可用标注样本同时包含 `goodcase` 和 `badcase`，也会自动生成 `scripts/rules/dynamic/labeled_rules.json`：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --rule-layer labeled
 ```
 
 运行所有可用规则层：

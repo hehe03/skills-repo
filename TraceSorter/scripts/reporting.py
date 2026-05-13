@@ -56,6 +56,7 @@ def write_report(
     rules: List[Dict[str, Any]],
     results: List[Dict[str, Any]],
     max_rows: int = 200,
+    notes: List[str] | None = None,
 ) -> Path:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -68,6 +69,11 @@ def write_report(
     lines.append(f"- Samples evaluated: {len(results)}")
     lines.append(f"- Rules loaded: {len(rules)}")
     lines.append("")
+    if notes:
+        lines.append("## Run Notes")
+        lines.append("")
+        lines.extend(f"- {note}" for note in notes)
+        lines.append("")
     lines.extend(_final_answer_summary(results))
     if metrics["count"]:
         lines.append("## Metrics")

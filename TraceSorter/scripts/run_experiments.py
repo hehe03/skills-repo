@@ -61,11 +61,13 @@ def maybe_generate_rules(
     )
 
     if do_unlabeled:
-        generate_unlabeled_rules(fit_records, UNLABELED_RULES, final_answer_config)
+        rules = generate_unlabeled_rules(fit_records, UNLABELED_RULES, final_answer_config)
         generated.append(str(UNLABELED_RULES))
+        print(f"Generated unlabeled dynamic rules: {UNLABELED_RULES} ({len(rules)} rules)")
     if do_labeled:
-        generate_labeled_rules(labeled_fit, LABELED_RULES, final_answer_config)
+        rules = generate_labeled_rules(labeled_fit, LABELED_RULES, final_answer_config)
         generated.append(str(LABELED_RULES))
+        print(f"Generated labeled dynamic rules: {LABELED_RULES} ({len(rules)} rules)")
     return generated
 
 
@@ -143,7 +145,7 @@ def predict_with_method(
 def run_experiment(args: argparse.Namespace) -> Path:
     validate_method_requirements(args, [args.rule_layer])
     records = load_records(args.trace_path, args.metadata)
-    maybe_generate_rules(args, records, [args.rule_layer])
+    generated_rule_files = maybe_generate_rules(args, records, [args.rule_layer])
     rules = load_rules(rule_paths_for_layer(args.rule_layer))
     eval_records = _eval_records(records, args.eval_split)
     final_answer_config = discover_default_final_answer_config(
@@ -163,13 +165,14 @@ def run_experiment(args: argparse.Namespace) -> Path:
         rules=rules,
         results=results,
         max_rows=args.max_rows,
+        notes=[f"Generated dynamic rule file: `{path}`" for path in generated_rule_files],
     )
 
 
 def run_methods_comparison(args: argparse.Namespace, methods: List[str]) -> Path:
     validate_method_requirements(args, methods)
     records = load_records(args.trace_path, args.metadata)
-    maybe_generate_rules(args, records, methods)
+    generated_rule_files = maybe_generate_rules(args, records, methods)
     eval_records = _eval_records(records, args.eval_split)
     final_answer_config = discover_default_final_answer_config(
         records,
@@ -194,6 +197,12 @@ def run_methods_comparison(args: argparse.Namespace, methods: List[str]) -> Path
         f"- Samples evaluated: {len(eval_records)}",
         "",
     ]
+    if generated_rule_files:
+        lines.append("## Generated Dynamic Rules")
+        lines.append("")
+        for path in generated_rule_files:
+            lines.append(f"- `{path}`")
+        lines.append("")
     first_results = next(iter(results_by_method.values()), [])
     policies: Dict[str, int] = {}
     for row in first_results:
@@ -272,7 +281,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--generate-dynamic-rules",
         choices=["none", "unlabeled", "labeled", "both", "auto"],
-        default="none",
+        default="auto",
         help="Generate dynamic rules before evaluation.",
     )
     parser.add_argument("--bad-threshold", type=float, default=0.60)
