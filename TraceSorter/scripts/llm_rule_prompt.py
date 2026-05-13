@@ -54,11 +54,15 @@ def _extract_json_text(text: str) -> str:
     return stripped
 
 
+def parse_llm_response(text: str) -> Dict[str, Any]:
+    return json.loads(_extract_json_text(text))
+
+
 def load_llm_payload(path: str | Path | None) -> Dict[str, Any]:
     if not path:
         return {}
     raw = Path(path).read_text(encoding="utf-8")
-    return json.loads(_extract_json_text(raw))
+    return parse_llm_response(raw)
 
 
 def load_rules_payload(path: str | Path) -> Dict[str, Any]:

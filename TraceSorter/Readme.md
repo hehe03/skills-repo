@@ -356,6 +356,18 @@ python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --methods
 python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --methods all
 ```
 
+当选择 `llm` 方法时，`run_experiments.py` 会默认触发 `scripts/llm_rule_prompt.py` 中的 `call_llm()`，并写入：
+
+```text
+scripts/rules/dynamic/llm_rules.json
+```
+
+因此在运行 LLM 方法前，需要先补全 `call_llm()` 函数内部：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --methods general,llm --llm-provider custom --llm-model my-model
+```
+
 `--output-dir` 和 `--output` 的区别：
 
 - `--output-dir`：只指定目录，脚本按“方法+时间”自动命名 Markdown 报告。

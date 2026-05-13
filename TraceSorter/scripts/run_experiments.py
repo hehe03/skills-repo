@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any, Dict, List
 
 from features import discover_default_final_answer_config, extract_features, load_final_answer_config
+from llm_rule_prompt import build_prompt as build_llm_prompt
+from llm_rule_prompt import call_llm, parse_llm_response, write_llm_rule_report
 from metrics import confusion_and_scores
 from reporting import default_report_path, write_report
 from rule_engine import classify_features, load_rules
@@ -38,6 +41,78 @@ def _eval_records(records: List[TraceRecord], eval_split: str | None = None) -> 
     return records
 
 
+def _parse_llm_extra(items: List[str]) -> Dict[str, Any]:
+    extra_args: Dict[str, Any] = {}
+    for item in items:
+        if "=" not in item:
+            raise ValueError(f"--llm-extra must use key=value format: {item}")
+        key, value = item.split("=", 1)
+        extra_args[key.strip()] = value.strip()
+    return extra_args
+
+
+def _write_llm_rules(payload: Dict[str, Any], output_path: Path) -> int:
+    rules = payload.get("rules") or []
+    if not isinstance(rules, list):
+        raise ValueError("LLM response must contain a JSON array field named 'rules'")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    saved_payload = {
+        "rules": rules,
+        "final_answer_config": payload.get("final_answer_config", {}),
+        "proposed_features": payload.get("proposed_features", []),
+        "note": "Generated from call_llm() by scripts/run_experiments.py.",
+    }
+    output_path.write_text(json.dumps(saved_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return len(rules)
+
+
+def generate_llm_rules(args: argparse.Namespace) -> str:
+    prompt_args = argparse.Namespace(
+        trace_path=args.trace_path,
+        metadata=args.metadata,
+        split=args.llm_prompt_split,
+        max_samples=args.llm_max_samples,
+        final_answer_config=args.final_answer_config,
+        final_answer_item=args.final_answer_item,
+    )
+    prompt = build_llm_prompt(prompt_args)
+    prompt_path = Path(args.llm_prompt_output) if args.llm_prompt_output else Path(args.output_dir) / "llm_rule_prompt.md"
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text(prompt + "\n", encoding="utf-8")
+
+    response = call_llm(
+        prompt,
+        provider=args.llm_provider,
+        model=args.llm_model,
+        temperature=args.llm_temperature,
+        extra_args=_parse_llm_extra(args.llm_extra),
+    )
+    if not response:
+        raise RuntimeError(
+            "LLM method was selected, so call_llm() was triggered but returned empty output. "
+            "Please implement scripts/llm_rule_prompt.py::call_llm()."
+        )
+
+    llm_output_path = Path(args.llm_output) if args.llm_output else Path(args.output_dir) / "llm_response.json"
+    llm_output_path.parent.mkdir(parents=True, exist_ok=True)
+    llm_output_path.write_text(response, encoding="utf-8")
+
+    payload = parse_llm_response(response)
+    rule_count = _write_llm_rules(payload, LLM_RULES)
+    report_path = Path(args.llm_report_output) if args.llm_report_output else Path(args.output_dir) / "llm_rule_repoert.md"
+    write_llm_rule_report(
+        report_path,
+        llm_output_path=str(llm_output_path),
+        rules_path=LLM_RULES,
+        prompt_path=str(prompt_path),
+    )
+    print(f"Generated LLM dynamic rules: {LLM_RULES} ({rule_count} rules)")
+    print(f"Wrote LLM prompt: {prompt_path}")
+    print(f"Wrote LLM response: {llm_output_path}")
+    print(f"Wrote LLM rule report: {report_path}")
+    return str(LLM_RULES)
+
+
 def maybe_generate_rules(
     args: argparse.Namespace,
     records: List[TraceRecord],
@@ -59,6 +134,7 @@ def maybe_generate_rules(
     do_labeled = mode in {"labeled", "both"} or (
         mode == "auto" and any(method in {"labeled", "all"} for method in target_methods) and _has_both_labels(labeled_fit)
     )
+    do_llm = any(method in {"llm", "all"} for method in target_methods)
 
     if do_unlabeled:
         rules = generate_unlabeled_rules(fit_records, UNLABELED_RULES, final_answer_config)
@@ -68,6 +144,8 @@ def maybe_generate_rules(
         rules = generate_labeled_rules(labeled_fit, LABELED_RULES, final_answer_config)
         generated.append(str(LABELED_RULES))
         print(f"Generated labeled dynamic rules: {LABELED_RULES} ({len(rules)} rules)")
+    if do_llm:
+        generated.append(generate_llm_rules(args))
     return generated
 
 
@@ -302,6 +380,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="Business-specific final answer key:value pattern. Use * as a wildcard. Can be repeated.",
     )
+    parser.add_argument("--llm-provider", help="Provider name passed to call_llm() when llm method is selected.")
+    parser.add_argument("--llm-model", help="Model name passed to call_llm() when llm method is selected.")
+    parser.add_argument("--llm-temperature", type=float, default=0.0, help="Temperature passed to call_llm().")
+    parser.add_argument(
+        "--llm-extra",
+        action="append",
+        default=[],
+        help="Extra key=value argument passed to call_llm(). Can be repeated.",
+    )
+    parser.add_argument("--llm-output", help="Path for raw LLM response JSON. Defaults to <output-dir>/llm_response.json.")
+    parser.add_argument("--llm-prompt-output", help="Path for generated LLM prompt. Defaults to <output-dir>/llm_rule_prompt.md.")
+    parser.add_argument("--llm-report-output", help="Path for Chinese LLM rule report. Defaults to <output-dir>/llm_rule_repoert.md.")
+    parser.add_argument("--llm-prompt-split", help="Optional metadata split used when building the LLM prompt.")
+    parser.add_argument("--llm-max-samples", type=int, default=30, help="Maximum feature rows included in the LLM prompt.")
     return parser
 
 

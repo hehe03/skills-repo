@@ -159,6 +159,8 @@ python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv
 
 `run_experiments.py` 默认 `--generate-dynamic-rules auto`。当 `--rule-layer` 或 `--methods` 包含 `unlabeled` 时，且可用样本不少于 3 条，会自动生成 `unlabeled_rules.json`；当包含 `labeled` 且训练/可用标注样本同时包含 `goodcase` 和 `badcase` 时，会自动生成 `labeled_rules.json`。
 
+当 `--rule-layer llm` 或 `--methods` 包含 `llm` 时，会默认触发 `scripts/llm_rule_prompt.py` 中的 `call_llm()`：先生成 prompt，再调用 LLM，保存 LLM 返回，写入 `scripts/rules/dynamic/llm_rules.json`，并生成中文 `llm_rule_repoert.md`。`call_llm()` 函数体需要按实际 provider 自行补全。
+
 常用参数：
 
 - `--bad-threshold`：判为 badcase 的最低风险分，默认 `0.60`。
@@ -170,6 +172,7 @@ python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv
 - `--max-rows`：Markdown 报告中最多展示的样本行数。
 - `--final-answer-item`：追加业务相关最终回答键值对模式，格式为 `key:value`，可重复传入，`*` 匹配任意字符。
 - `--final-answer-config`：使用 JSON 配置控制最终回答识别。
+- `--llm-provider` / `--llm-model` / `--llm-extra`：当选择 `llm` 方法时传给 `call_llm()` 的自定义参数。
 
 ## 输出
 
