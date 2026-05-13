@@ -41,7 +41,7 @@ def maybe_generate_rules(args: argparse.Namespace, records: List[TraceRecord]) -
     labeled_fit = records_with_labels(fit_records)
     final_answer_config = discover_default_final_answer_config(
         fit_records,
-        load_final_answer_config(args.final_answer_config, args.final_answer_keys),
+        load_final_answer_config(args.final_answer_config, args.final_answer_item),
     )
 
     do_unlabeled = mode in {"unlabeled", "both"} or (
@@ -82,7 +82,7 @@ def run_experiment(args: argparse.Namespace) -> Path:
     eval_records = _eval_records(records)
     final_answer_config = discover_default_final_answer_config(
         records,
-        load_final_answer_config(args.final_answer_config, args.final_answer_keys),
+        load_final_answer_config(args.final_answer_config, args.final_answer_item),
     )
 
     results: List[Dict[str, Any]] = []
@@ -133,7 +133,7 @@ def _predict_records(
     results: List[Dict[str, Any]] = []
     final_answer_config = discover_default_final_answer_config(
         records,
-        load_final_answer_config(args.final_answer_config, args.final_answer_keys),
+        load_final_answer_config(args.final_answer_config, args.final_answer_item),
     )
     for record in records:
         features = extract_features(record, final_answer_config)
@@ -293,8 +293,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional JSON config for business-specific final answer detection.",
     )
     parser.add_argument(
-        "--final-answer-keys",
-        help="Comma-separated business-specific final answer keys added to top-level and nested detection.",
+        "--final-answer-item",
+        action="append",
+        help="Business-specific final answer key:value pattern. Use * as a wildcard. Can be repeated.",
     )
     return parser
 

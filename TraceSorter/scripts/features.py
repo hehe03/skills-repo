@@ -36,11 +36,19 @@ RESULT_KEYS = {"result", "output", "observation", "content", "response", "final_
 
 
 @dataclass(frozen=True)
+class FinalAnswerItem:
+    key_pattern: str
+    value_pattern: str
+    raw: str
+
+
+@dataclass(frozen=True)
 class FinalAnswerConfig:
     top_level_keys: frozenset[str]
     nested_keys: frozenset[str]
     assistant_roles: frozenset[str]
     assistant_content_keys: frozenset[str]
+    item_patterns: tuple[FinalAnswerItem, ...] = ()
     min_chars: int = 1
     evidence_enabled: bool = False
     evidence_strength: str = "none"
@@ -54,6 +62,7 @@ def default_final_answer_config() -> FinalAnswerConfig:
         nested_keys=frozenset(DEFAULT_NESTED_FINAL_KEYS),
         assistant_roles=frozenset(DEFAULT_ASSISTANT_ROLES),
         assistant_content_keys=frozenset(DEFAULT_ASSISTANT_CONTENT_KEYS),
+        item_patterns=(),
         min_chars=1,
         evidence_enabled=False,
         evidence_strength="none",
@@ -72,9 +81,51 @@ def _as_string_set(value: Any) -> set[str]:
     return set()
 
 
+def _as_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def _parse_final_answer_item(raw: str) -> FinalAnswerItem:
+    text = raw.strip()
+    if ":" not in text:
+        raise ValueError(f"final-answer item must use key:value format: {raw}")
+    key, value = text.split(":", 1)
+    key = key.strip()
+    value = value.strip()
+    if not key:
+        raise ValueError(f"final-answer item has empty key: {raw}")
+    if not value:
+        value = "*"
+    return FinalAnswerItem(key_pattern=key, value_pattern=value, raw=f"{key}:{value}")
+
+
+def _parse_final_answer_items(value: Any) -> tuple[FinalAnswerItem, ...]:
+    items: List[FinalAnswerItem] = []
+    for raw in _as_string_list(value):
+        chunks = [raw]
+        if "\n" in raw or ";" in raw:
+            chunks = re.split(r"[;\n]+", raw)
+        for chunk in chunks:
+            if chunk.strip():
+                items.append(_parse_final_answer_item(chunk))
+    return tuple(items)
+
+
+def _wildcard_fullmatch(pattern: str, value: Any) -> bool:
+    text = _stringify(value).strip()
+    regex = "^" + re.escape(pattern).replace(r"\*", ".*") + "$"
+    return re.fullmatch(regex, text, flags=re.IGNORECASE | re.DOTALL) is not None
+
+
 def load_final_answer_config(
     config_path: str | Path | None = None,
-    extra_keys: str | List[str] | None = None,
+    final_answer_items: str | List[str] | None = None,
 ) -> FinalAnswerConfig:
     config = default_final_answer_config()
     data: Dict[str, Any] = {}
@@ -96,15 +147,11 @@ def load_final_answer_config(
     if "assistant_content_keys" in data:
         assistant_content_keys = _as_string_set(data.get("assistant_content_keys"))
 
-    simple_extra_keys = _as_string_set(extra_keys)
-    if simple_extra_keys and not config_path:
-        top_level_keys = set(simple_extra_keys)
-        nested_keys = set(simple_extra_keys)
-        assistant_content_keys = set()
-    top_level_keys.update(simple_extra_keys)
-    nested_keys.update(simple_extra_keys)
+    item_patterns = _parse_final_answer_items(final_answer_items)
+    if "final_answer_items" in data:
+        item_patterns = item_patterns + _parse_final_answer_items(data.get("final_answer_items"))
     config_source = str(data.get("evidence_source") or "").strip().lower()
-    has_user_override = bool(config_path or simple_extra_keys)
+    has_user_override = bool(config_path or item_patterns)
     evidence_source = config_source or ("user" if has_user_override else "none")
     evidence_strength = "strong" if evidence_source == "user" else "medium" if evidence_source == "llm" else "none"
     evidence_enabled = has_user_override or evidence_source in {"user", "llm"}
@@ -118,11 +165,12 @@ def load_final_answer_config(
         nested_keys=frozenset(nested_keys),
         assistant_roles=frozenset(assistant_roles),
         assistant_content_keys=frozenset(assistant_content_keys),
+        item_patterns=item_patterns,
         min_chars=max(1, int(data.get("min_chars", config.min_chars))),
         evidence_enabled=evidence_enabled,
         evidence_strength=evidence_strength if evidence_enabled else "none",
         evidence_source=evidence_source if evidence_enabled else "none",
-        adopted_fields=tuple(sorted(simple_extra_keys)) if simple_extra_keys else tuple(data.get("adopted_fields", ())),
+        adopted_fields=tuple(item.raw for item in item_patterns) if item_patterns else tuple(data.get("adopted_fields", ())),
     )
 
 
@@ -132,6 +180,7 @@ def _replace_final_answer_config(
     top_level_keys: Iterable[str] | None = None,
     nested_keys: Iterable[str] | None = None,
     assistant_content_keys: Iterable[str] | None = None,
+    item_patterns: Iterable[FinalAnswerItem] | None = None,
     evidence_enabled: bool,
     evidence_strength: str,
     evidence_source: str,
@@ -144,6 +193,7 @@ def _replace_final_answer_config(
         assistant_content_keys=frozenset(
             assistant_content_keys if assistant_content_keys is not None else config.assistant_content_keys
         ),
+        item_patterns=tuple(item_patterns if item_patterns is not None else config.item_patterns),
         min_chars=config.min_chars,
         evidence_enabled=evidence_enabled,
         evidence_strength=evidence_strength,
@@ -243,10 +293,27 @@ def _valid_final_text(value: Any, config: FinalAnswerConfig) -> str:
     return text if len(text) >= config.min_chars else ""
 
 
+def _match_final_answer_items(node: Dict[str, Any], config: FinalAnswerConfig) -> tuple[str, str, str] | None:
+    for key, value in node.items():
+        for item in config.item_patterns:
+            if not _wildcard_fullmatch(item.key_pattern, key):
+                continue
+            if not _wildcard_fullmatch(item.value_pattern, value):
+                continue
+            text = _valid_final_text(value, config)
+            if text:
+                return text, key, item.raw
+    return None
+
+
 def _has_final_answer(trace: Any, config: FinalAnswerConfig) -> Tuple[bool, int, str]:
     if not config.evidence_enabled:
         return False, 0, ""
     if isinstance(trace, dict):
+        item_match = _match_final_answer_items(trace, config)
+        if item_match:
+            text, key, raw = item_match
+            return True, len(text), f"top_level_item:{key}~{raw}"
         for key, value in trace.items():
             if key in config.top_level_keys:
                 text = _valid_final_text(value, config)
@@ -256,6 +323,10 @@ def _has_final_answer(trace: Any, config: FinalAnswerConfig) -> Tuple[bool, int,
     for node in _walk_descendants(trace):
         if not isinstance(node, dict):
             continue
+        item_match = _match_final_answer_items(node, config)
+        if item_match:
+            text, key, raw = item_match
+            final_like.append((text, f"nested_item:{key}~{raw}"))
         role = str(node.get("role", "")).lower()
         if role in config.assistant_roles:
             for key in config.assistant_content_keys:
@@ -308,6 +379,7 @@ def discover_default_final_answer_config(
         top_level_keys=top_hits,
         nested_keys=nested_hits,
         assistant_content_keys={item.split(":", 1)[1] for item in assistant_hits},
+        item_patterns=(),
         evidence_enabled=True,
         evidence_strength="medium",
         evidence_source="default",

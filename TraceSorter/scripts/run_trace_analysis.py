@@ -33,7 +33,7 @@ def classify_records(args: argparse.Namespace) -> List[Dict[str, Any]]:
     rules = load_rules(rule_paths_for_layer(args.rule_layer))
     final_answer_config = discover_default_final_answer_config(
         records,
-        load_final_answer_config(args.final_answer_config, args.final_answer_keys),
+        load_final_answer_config(args.final_answer_config, args.final_answer_item),
     )
     results: List[Dict[str, Any]] = []
     for record in records:
@@ -88,8 +88,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional JSON config for business-specific final answer detection.",
     )
     parser.add_argument(
-        "--final-answer-keys",
-        help="Comma-separated business-specific final answer keys added to top-level and nested detection.",
+        "--final-answer-item",
+        action="append",
+        help="Business-specific final answer key:value pattern. Use * as a wildcard. Can be repeated.",
     )
     return parser
 

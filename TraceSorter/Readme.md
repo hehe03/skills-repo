@@ -87,7 +87,7 @@ TraceSorter/
 
 证据采用策略：
 
-- 用户通过 `--final-answer-keys` 指定字段：强证据，并且顶层字段和内部递归字段都算。
+- 用户通过 `--final-answer-item` 指定键值对模式：强证据，并且顶层字段和内部递归字段都算。
 - 用户通过 `--final-answer-config` 指定字段：强证据，但严格按配置中的 `top_level_keys` 和 `nested_keys` 执行；若希望两处都算，需要同时写入两组。
 - 用户未指定时，脚本先扫描输入 trace 是否命中默认候选字段：中等证据。
 - LLM 方法可先让大模型判断业务 final-answer 字段，再把字段写入配置并设置 `evidence_source=llm`：中等证据。
@@ -105,13 +105,13 @@ TraceSorter/
 scripts/rules/static/final_answer_config.json
 ```
 
-如果某个业务的最终回答字段叫 `business_result` 或 `summary_text`，可以用命令行快速追加：
+如果某个业务的最终回答形如 `business_result: <任意非空内容>` 或 `status: final_success`，可以用命令行快速追加：
 
 ```powershell
-python .\scripts\run_experiments.py .\traces --final-answer-keys business_result,summary_text
+python .\scripts\run_experiments.py .\traces --final-answer-item "business_result:*" --final-answer-item "status: *success*"
 ```
 
-这种写法会同时检查顶层字段和内部递归字段。
+这种写法会同时检查顶层字段和内部递归字段。冒号两侧空格会被自动兼容，例如 `status: *success*` 和 `status : *success*` 都可以。
 
 也可以使用完整 JSON 配置：
 
@@ -125,6 +125,7 @@ python .\scripts\run_experiments.py .\traces --final-answer-config .\final_answe
 {
   "top_level_keys": ["final_answer", "business_result"],
   "nested_keys": ["final_answer", "business_result", "summary_text"],
+  "final_answer_items": ["business_result:*", "status: *success*"],
   "assistant_roles": ["assistant"],
   "assistant_content_keys": ["content"],
   "min_chars": 1,

@@ -59,7 +59,7 @@ python .\scripts\llm_rule_prompt.py <trace_json_or_dir> --metadata <metadata.csv
 
 证据强度规则：
 
-1. 如果用户通过 `--final-answer-keys` 指定字段，则这些字段在顶层和内部递归位置都算作强证据，`final_answer_evidence_strength=strong`。
+1. 如果用户通过 `--final-answer-item` 指定键值对模式，则这些 item 在顶层和内部递归位置都算作强证据，`final_answer_evidence_strength=strong`。
 2. 如果用户通过 `--final-answer-config` 指定字段，则按配置中的 `top_level_keys` 和 `nested_keys` 执行；若希望顶层和内部都算，需要把字段同时写入两组。
 3. 如果用户没有指定字段，脚本会先扫描输入 trace，检查可见字段是否命中默认候选字段。命中后采用这些字段作为中等强度证据，`final_answer_evidence_strength=medium`。
 4. 如果是 LLM 方法，可以让大模型先判断能否找到业务 final-answer 字段，并将字段写入配置，设置 `evidence_source=llm`。这类字段也作为中等强度证据。
@@ -77,13 +77,13 @@ python .\scripts\llm_rule_prompt.py <trace_json_or_dir> --metadata <metadata.csv
 scripts/rules/static/final_answer_config.json
 ```
 
-快速添加业务字段：
+快速添加业务 item：
 
 ```powershell
-python .\scripts\run_experiments.py <trace_json_or_dir> --final-answer-keys business_result,summary_text
+python .\scripts\run_experiments.py <trace_json_or_dir> --final-answer-item "business_result:*" --final-answer-item "status: *success*"
 ```
 
-上述命令会同时检查 `trace["business_result"]` 这类顶层字段，以及任意内部节点中的 `business_result` / `summary_text`。
+上述命令会同时检查 `trace["business_result"]` 这类顶层字段，以及任意内部节点中的 `business_result` / `status`。`*` 表示任意字符，`key:value`、`key: value`、`key : value` 都兼容。
 
 使用完整配置：
 
@@ -97,6 +97,7 @@ python .\scripts\run_experiments.py <trace_json_or_dir> --final-answer-config .\
 {
   "top_level_keys": ["final_answer", "business_result"],
   "nested_keys": ["final_answer", "business_result", "summary_text"],
+  "final_answer_items": ["business_result:*", "status: *success*"],
   "assistant_roles": ["assistant"],
   "assistant_content_keys": ["content"],
   "min_chars": 1,
@@ -173,7 +174,7 @@ python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv
 - `--max-rows`：Markdown 报告中最多展示的样本行数。
 - `--aggregation`：规则汇聚方法，取 `weighted` 或 `group_capped`。
 - `--compare-general-methods`：一次比较两种通用规则方法。
-- `--final-answer-keys`：追加业务相关最终回答字段，多个字段用逗号分隔。
+- `--final-answer-item`：追加业务相关最终回答键值对模式，格式为 `key:value`，可重复传入，`*` 匹配任意字符。
 - `--final-answer-config`：使用 JSON 配置控制最终回答识别。
 
 ## 输出

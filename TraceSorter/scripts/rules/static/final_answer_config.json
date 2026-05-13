@@ -19,7 +19,10 @@
   "assistant_content_keys": [
     "content"
   ],
+  "final_answer_items": [
+    "business_result:*"
+  ],
   "min_chars": 1,
   "evidence_source": "user",
-  "note": "Configure business-specific final answer fields here. No long free-text fallback is used."
+  "note": "Configure business-specific final answer key:value patterns here. * matches any characters. No long free-text fallback is used."
 }

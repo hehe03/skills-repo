@@ -180,7 +180,7 @@ def build_prompt(args: argparse.Namespace) -> str:
     records = load_records(args.trace_path, args.metadata)
     final_answer_config = discover_default_final_answer_config(
         records,
-        load_final_answer_config(args.final_answer_config, args.final_answer_keys),
+        load_final_answer_config(args.final_answer_config, args.final_answer_item),
     )
     if args.split:
         records = [record for record in records if (record.split or "") == args.split]
@@ -242,6 +242,7 @@ def build_prompt(args: argparse.Namespace) -> str:
                     "final_answer_config": {
                         "top_level_keys": ["business_result"],
                         "nested_keys": ["business_result", "summary_text"],
+                        "final_answer_items": ["business_result:*", "status: *success*"],
                         "assistant_roles": ["assistant"],
                         "assistant_content_keys": ["content"],
                         "min_chars": 1,
@@ -294,8 +295,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional JSON config for business-specific final answer detection.",
     )
     parser.add_argument(
-        "--final-answer-keys",
-        help="Comma-separated business-specific final answer keys added to top-level and nested detection.",
+        "--final-answer-item",
+        action="append",
+        help="Business-specific final answer key:value pattern. Use * as a wildcard. Can be repeated.",
     )
     return parser
 
