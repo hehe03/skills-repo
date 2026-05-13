@@ -43,7 +43,6 @@ def classify_records(args: argparse.Namespace) -> List[Dict[str, Any]]:
             rules,
             bad_threshold=args.bad_threshold,
             good_threshold=args.good_threshold,
-            aggregation=args.aggregation,
         )
         results.append(
             {
@@ -76,12 +75,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--bad-threshold", type=float, default=0.60)
     parser.add_argument("--good-threshold", type=float, default=0.50)
-    parser.add_argument(
-        "--aggregation",
-        choices=["weighted", "group_capped"],
-        default="weighted",
-        help="How to combine matched rule weights.",
-    )
     parser.add_argument("--output", help="Optional JSON output path.")
     parser.add_argument(
         "--final-answer-config",
@@ -101,19 +94,12 @@ def main() -> None:
     if args.output:
         Path(args.output).write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(
-        "name\tlabel\tpredicted_label\tbad_score\tgood_score\t"
-        "final_answer_policy\tfinal_answer_source\treason"
+        "name\tlabel\tpredicted_label\tbad_score\tgood_score\treason"
     )
     for row in results:
-        final_policy = (
-            f"{row['final_answer_evidence_source']}/"
-            f"{row['final_answer_evidence_strength']}:"
-            f"{row['final_answer_adopted_fields'] or 'none'}"
-        )
         print(
             f"{row['name']}\t{row.get('label') or ''}\t{row['predicted_label']}\t"
-            f"{row['bad_score']}\t{row['good_score']}\t{final_policy}\t"
-            f"{row['final_answer_source'] or 'none'}\t{row['reason']}"
+            f"{row['bad_score']}\t{row['good_score']}\t{row['reason']}"
         )
 
 

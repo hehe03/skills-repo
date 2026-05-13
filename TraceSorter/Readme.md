@@ -39,7 +39,38 @@ TraceSorter/
 1. **读取 trace 与 metadata**：`trace_io.py` 读取单个 JSON 或目录下的 JSON 文件；metadata CSV 用于补充 `label`、`source`、`split` 信息。
 2. **抽取行为特征**：`features.py` 遍历 trace，识别常见 Agent 轨迹结构，并抽取稳定、可解释的统计特征。
 3. **生成或加载规则**：通用规则直接从静态 JSON 读取；无标注/有标注规则由 `rule_generation.py` 根据样本特征生成。
-4. **执行规则并合并分数**：`rule_engine.py` 对每条 trace 匹配规则，按 `weighted` 或 `group_capped` 汇聚 badcase/goodcase 分数，最后根据阈值输出标签。
+4. **执行规则并合并分数**：`rule_engine.py` 对每条 trace 匹配规则，累加 badcase/goodcase 分数，最后根据阈值输出标签。
+
+```mermaid
+flowchart TD
+    A["输入 trace JSON 文件或目录"] --> B["读取 trace_io.py"]
+    M["可选 metadata CSV<br/>name / label / source / split"] --> B
+    B --> C["解析 final-answer policy"]
+    C --> C1{"用户是否指定<br/>--final-answer-item 或 config"}
+    C1 -->|是| C2["采用用户键值对<br/>user / strong<br/>顶层 + 嵌套层"]
+    C1 -->|否| C3["扫描默认候选字段"]
+    C3 --> C4{"是否命中默认字段"}
+    C4 -->|是| C5["采用默认字段<br/>default / medium"]
+    C4 -->|否| C6["禁用 has_final_answer 证据"]
+    C2 --> D["抽取 features.py 特征"]
+    C5 --> D
+    C6 --> D
+    D --> E{"选择规则层"}
+    E -->|general| F["加载静态通用规则<br/>general_rules.json"]
+    E -->|unlabeled| G["从无标注样本生成动态规则<br/>unlabeled_rules.json"]
+    E -->|labeled| H["从 train 标注样本生成动态规则<br/>labeled_rules.json"]
+    E -->|llm| I["生成 LLM prompt<br/>人工/LLM 写入 llm_rules.json"]
+    F --> J["rule_engine.py 匹配规则"]
+    G --> J
+    H --> J
+    I --> J
+    J --> K["累加 bad_score / good_score"]
+    K --> L{"bad_score >= 阈值<br/>且 bad_score >= good_score"}
+    L -->|是| N["输出 badcase"]
+    L -->|否| O["输出 goodcase"]
+    N --> P["生成 Markdown 实验报告"]
+    O --> P
+```
 
 ## 关于 Codex/OpenCode 与 LLM 配置
 
@@ -135,10 +166,7 @@ python .\scripts\run_experiments.py .\traces --final-answer-config .\final_answe
 
 `top_level_keys` 适合最终回答只出现在 trace 顶层的业务字段；`nested_keys` 适合可能出现在任意节点的业务字段。若字段名也会出现在中间工具结果中，应优先放在 `top_level_keys`，避免误判。
 
-输出报告会显示：
-
-- `final_answer_policy`：是否采用 final-answer 证据、证据来源、证据强度和采用字段。
-- `final_answer_source`：当前样本实际命中的字段，例如 `top_level:business_result`。
+输出报告会在方法说明区域汇总 final-answer policy，例如来源、证据强度、键值对模式和样本数；单条 case 表格不再重复展示这些字段。
 
 ## 第一层：通用静态规则
 
@@ -175,24 +203,7 @@ bad_score >= 0.60 且 bad_score >= good_score -> badcase
 否则 -> goodcase
 ```
 
-这种方法适合作为简单 baseline，但相关规则可能重复计分。
-
-### 通用方法 B：规则分组与组内封顶
-
-`group_capped` 是新增通用方法。规则仍然保留各自权重，但会先按语义组汇聚，再限制每组最高贡献：
-
-| label | group | cap | 说明 |
-|---|---|---:|---|
-| badcase | `hard_failure` | 1.00 | JSON 解析失败、空 trace |
-| badcase | `structure_missing` | 0.55 | 缺少可观察步骤 |
-| badcase | `error_signal` | 0.75 | 错误、异常、超时、失败文本 |
-| badcase | `result_missing` | 0.60 | 缺少最终回答、空结果比例高 |
-| badcase | `loop_or_inefficiency` | 0.55 | 连续重复动作、步数过多 |
-| goodcase | `completion_evidence` | 0.45 | 存在最终回答 |
-| goodcase | `result_evidence` | 0.30 | 非空结果比例高 |
-| goodcase | `clean_execution` | 0.25 | 无错误且无循环信号 |
-
-这样做的目的不是完全消除权重，而是避免同一类证据重复放大。例如“缺少最终回答”和“大部分结果为空”都属于结果缺失，不应无上限叠加。
+这是当前唯一保留的通用规则汇聚方法。
 
 ### 权重与阈值核查结论
 
@@ -200,9 +211,8 @@ bad_score >= 0.60 且 bad_score >= good_score -> badcase
 
 - 硬失败信号可以单独触发 badcase。
 - 单个软风险信号通常不足以触发 badcase，需要多个不同组风险共同出现。
-- 相关软风险信号使用组内封顶降低不鲁棒性。
 - goodcase 规则只作为完成证据，不用于抵消解析失败、空 trace 等硬失败。
-- `bad_threshold=0.60` 与 `good_threshold=0.50` 暂时保留，便于两种通用方法可比。
+- `bad_threshold=0.60` 与 `good_threshold=0.50` 暂时保留，便于与后续方法对比。
 
 无标注动态规则由脚本确定性生成，不再要求人工核查后才能进入实验。
 
@@ -337,19 +347,6 @@ python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --rule-la
 python .\scripts\run_experiments.py .\traces --rule-layer general
 ```
 
-比较两种通用规则方法：
-
-```powershell
-python .\scripts\run_experiments.py .\traces --compare-general-methods
-python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --compare-general-methods
-```
-
-单独运行分组封顶通用规则：
-
-```powershell
-python .\scripts\run_experiments.py .\traces --rule-layer general --aggregation group_capped
-```
-
 生成并使用无标注动态规则：
 
 ```powershell
@@ -384,7 +381,7 @@ python .\scripts\llm_rule_prompt.py .\traces --output llm_rule_prompt.md --no-re
 
 ```python
 if __name__ == "__main__":
-    SCRIPT_ARGS = [r".\traces", "--compare-general-methods", "--output-dir", r".\results"]
+    SCRIPT_ARGS = [r".\traces", "--rule-layer", "general", "--output-dir", r".\results"]
     main(SCRIPT_ARGS)
 ```
 

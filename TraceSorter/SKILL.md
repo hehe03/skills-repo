@@ -105,7 +105,7 @@ python .\scripts\run_experiments.py <trace_json_or_dir> --final-answer-config .\
 }
 ```
 
-输出中会明确包含 `final_answer_policy` 和 `final_answer_source`。例如：
+实验报告会在方法说明区域汇总 final-answer policy，例如：
 
 ```text
 user/strong:business_result
@@ -113,28 +113,19 @@ default/medium:top_level:final_answer,nested:answer
 none/none:none
 ```
 
-## 两种通用规则汇聚方法
+## 通用规则汇聚方法
 
-通用规则层支持两种无监督 baseline，用于比较规则权重/阈值设计是否稳健：
-
-1. **普通加权法（`weighted`）**：所有命中的 badcase 规则直接累加到 `bad_score`，所有命中的 goodcase 规则直接累加到 `good_score`。优点是简单；缺点是相关规则可能重复计分。
-2. **分组封顶法（`group_capped`）**：规则仍然有权重，但先按语义组汇聚，再对每个组设置贡献上限。当前 badcase 组包括 `hard_failure`、`structure_missing`、`error_signal`、`result_missing`、`loop_or_inefficiency`；goodcase 组包括 `completion_evidence`、`result_evidence`、`clean_execution`。这种方法用于降低“缺少 final answer + 空结果比例高”等相关规则重复放大的风险。
+通用规则层使用单一加权方法：所有命中的 badcase 规则累加到 `bad_score`，所有命中的 goodcase 规则累加到 `good_score`。
 
 通用规则的权重/阈值已按强弱信号重新核查：
 
 - 解析失败、空 trace 属于硬失败信号，单独即可超过 badcase 阈值。
-- 错误文本是强风险信号，但在封顶法中单组不无限叠加。
-- 缺少最终回答、空结果比例高属于同一结果缺失组，组内上限为 `0.60`。
-- 重复动作和步数过多属于效率/循环风险组，组内上限为 `0.55`。
+- 错误文本是强风险信号。
+- 缺少最终回答、空结果比例高属于结果缺失风险。
+- 重复动作和步数过多属于效率/循环风险。
 - goodcase 支持规则只提供正向证据，不覆盖硬失败信号。
 
-比较两种通用方法：
-
-```powershell
-python .\scripts\run_experiments.py <trace_json_or_dir> --compare-general-methods
-```
-
-如果有 metadata，会额外输出指标；没有 metadata 时，只输出预测和差异。
+如果有 metadata，会额外输出指标；没有 metadata 时，只输出预测结果。
 
 ## 规则层级
 
@@ -172,8 +163,6 @@ python .\scripts\run_experiments.py <trace_json_or_dir> --metadata <metadata.csv
 - `--good-threshold`：判为 goodcase 的最低支持分，默认 `0.50`。
 - `--output-dir`：实验报告输出目录，默认当前目录。
 - `--max-rows`：Markdown 报告中最多展示的样本行数。
-- `--aggregation`：规则汇聚方法，取 `weighted` 或 `group_capped`。
-- `--compare-general-methods`：一次比较两种通用规则方法。
 - `--final-answer-item`：追加业务相关最终回答键值对模式，格式为 `key:value`，可重复传入，`*` 匹配任意字符。
 - `--final-answer-config`：使用 JSON 配置控制最终回答识别。
 

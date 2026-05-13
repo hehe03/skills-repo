@@ -28,28 +28,21 @@ def _rule_summary(rules: Iterable[Dict[str, Any]]) -> List[str]:
 
 def _final_answer_summary(results: List[Dict[str, Any]]) -> List[str]:
     if not results:
-        return ["- Final answer policy: no samples"]
+        return ["- Final answer policy: no samples", ""]
     policies: Dict[str, int] = {}
-    sources: Dict[str, int] = {}
     for row in results:
         policy = (
             f"{row.get('final_answer_evidence_source', 'none')}/"
             f"{row.get('final_answer_evidence_strength', 'none')}:"
             f"{row.get('final_answer_adopted_fields') or 'none'}"
         )
-        source = row.get("final_answer_source") or "none"
         policies[policy] = policies.get(policy, 0) + 1
-        sources[source] = sources.get(source, 0) + 1
-    lines = ["## Final Answer Policy", ""]
+    lines = ["## Method Notes", ""]
+    lines.append("Final answer policy:")
     lines.append("| policy | samples |")
     lines.append("|---|---:|")
     for policy, count in sorted(policies.items()):
         lines.append(f"| `{policy}` | {count} |")
-    lines.append("")
-    lines.append("| matched source | samples |")
-    lines.append("|---|---:|")
-    for source, count in sorted(sources.items()):
-        lines.append(f"| `{source}` | {count} |")
     lines.append("")
     return lines
 
@@ -97,24 +90,15 @@ def write_report(
     lines.append("")
     lines.append("## Predictions")
     lines.append("")
-    lines.append(
-        "| name | label | predicted | bad_score | good_score | "
-        "final_answer_policy | final_answer_source | reason |"
-    )
-    lines.append("|---|---|---|---:|---:|---|---|---|")
+    lines.append("| name | label | predicted | bad_score | good_score | reason |")
+    lines.append("|---|---|---|---:|---:|---|")
     for row in results[:max_rows]:
         reason = str(row.get("reason", "")).replace("|", "\\|")
-        final_policy = (
-            f"{row.get('final_answer_evidence_source', 'none')}/"
-            f"{row.get('final_answer_evidence_strength', 'none')}:"
-            f"{row.get('final_answer_adopted_fields') or 'none'}"
-        )
         lines.append(
             f"| `{row.get('name')}` | {row.get('label') or ''} | {row.get('predicted_label')} | "
-            f"{row.get('bad_score')} | {row.get('good_score')} | {final_policy} | "
-            f"{row.get('final_answer_source') or 'none'} | {reason} |"
+            f"{row.get('bad_score')} | {row.get('good_score')} | {reason} |"
         )
     if len(results) > max_rows:
-        lines.append(f"| ... | ... | ... | ... | ... | ... | ... | truncated at {max_rows} rows |")
+        lines.append(f"| ... | ... | ... | ... | ... | truncated at {max_rows} rows |")
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return output
