@@ -36,6 +36,18 @@ name,label,source,split
 
 默认不调用 LLM 生成规则。若需要引入 LLM，可让 LLM 读样例后产出同一 JSON schema 的候选规则，再人工审查后写入动态规则文件。
 
+生成 LLM 规则 prompt，并默认输出中文报告 `llm_rule_repoert.md`：
+
+```powershell
+python .\scripts\llm_rule_prompt.py <trace_json_or_dir> --metadata <metadata.csv> --split train --output llm_rule_prompt.md
+```
+
+如果已经保存 LLM 返回结果，可用 `--llm-output` 让报告说明 LLM 实际发现了哪些规则：
+
+```powershell
+python .\scripts\llm_rule_prompt.py <trace_json_or_dir> --metadata <metadata.csv> --split train --output llm_rule_prompt.md --llm-output llm_response.json --report-output llm_rule_repoert.md
+```
+
 ## 最终回答识别机制
 
 `has_final_answer` 不再使用“trace 中存在长度大于等于 80 的字符串”这类宽松兜底。它先确定本次运行是否采用 final-answer 字段，再决定相关规则是否参与分类。
@@ -47,10 +59,11 @@ name,label,source,split
 
 证据强度规则：
 
-1. 如果用户通过 `--final-answer-keys` 或 `--final-answer-config` 指定字段，则该字段作为强证据，`final_answer_evidence_strength=strong`。
-2. 如果用户没有指定字段，脚本会先扫描输入 trace，检查可见字段是否命中默认候选字段。命中后采用这些字段作为中等强度证据，`final_answer_evidence_strength=medium`。
-3. 如果是 LLM 方法，可以让大模型先判断能否找到业务 final-answer 字段，并将字段写入配置，设置 `evidence_source=llm`。这类字段也作为中等强度证据。
-4. 如果没有用户指定、没有默认命中、也没有 LLM 发现，则 `has_final_answer` 不作为 good/bad 判定证据，相关规则不会命中。
+1. 如果用户通过 `--final-answer-keys` 指定字段，则这些字段在顶层和内部递归位置都算作强证据，`final_answer_evidence_strength=strong`。
+2. 如果用户通过 `--final-answer-config` 指定字段，则按配置中的 `top_level_keys` 和 `nested_keys` 执行；若希望顶层和内部都算，需要把字段同时写入两组。
+3. 如果用户没有指定字段，脚本会先扫描输入 trace，检查可见字段是否命中默认候选字段。命中后采用这些字段作为中等强度证据，`final_answer_evidence_strength=medium`。
+4. 如果是 LLM 方法，可以让大模型先判断能否找到业务 final-answer 字段，并将字段写入配置，设置 `evidence_source=llm`。这类字段也作为中等强度证据。
+5. 如果没有用户指定、没有默认命中、也没有 LLM 发现，则 `has_final_answer` 不作为 good/bad 判定证据，相关规则不会命中。
 
 默认候选来源：
 
@@ -69,6 +82,8 @@ scripts/rules/static/final_answer_config.json
 ```powershell
 python .\scripts\run_experiments.py <trace_json_or_dir> --final-answer-keys business_result,summary_text
 ```
+
+上述命令会同时检查 `trace["business_result"]` 这类顶层字段，以及任意内部节点中的 `business_result` / `summary_text`。
 
 使用完整配置：
 

@@ -87,7 +87,8 @@ TraceSorter/
 
 证据采用策略：
 
-- 用户通过 `--final-answer-keys` 或 `--final-answer-config` 指定字段：强证据。
+- 用户通过 `--final-answer-keys` 指定字段：强证据，并且顶层字段和内部递归字段都算。
+- 用户通过 `--final-answer-config` 指定字段：强证据，但严格按配置中的 `top_level_keys` 和 `nested_keys` 执行；若希望两处都算，需要同时写入两组。
 - 用户未指定时，脚本先扫描输入 trace 是否命中默认候选字段：中等证据。
 - LLM 方法可先让大模型判断业务 final-answer 字段，再把字段写入配置并设置 `evidence_source=llm`：中等证据。
 - 如果没有用户指定、默认命中或 LLM 发现，则 `has_final_answer` 不参与 good/bad 判定。
@@ -109,6 +110,8 @@ scripts/rules/static/final_answer_config.json
 ```powershell
 python .\scripts\run_experiments.py .\traces --final-answer-keys business_result,summary_text
 ```
+
+这种写法会同时检查顶层字段和内部递归字段。
 
 也可以使用完整 JSON 配置：
 
@@ -263,6 +266,18 @@ LLM 路线不是让模型直接对每条 trace 下最终结论，而是让模型
 python .\scripts\llm_rule_prompt.py .\traces --metadata .\metadata.csv --split train --output llm_rule_prompt.md
 ```
 
+该命令默认还会生成中文报告：
+
+```text
+llm_rule_repoert.md
+```
+
+如果已经把 LLM 返回保存为 JSON 或包含 JSON 代码块的 Markdown，可以让脚本汇总 LLM 实际发现的规则：
+
+```powershell
+python .\scripts\llm_rule_prompt.py .\traces --metadata .\metadata.csv --split train --output llm_rule_prompt.md --llm-output llm_response.json --report-output llm_rule_repoert.md
+```
+
 使用 LLM 规则运行实验：
 
 ```powershell
@@ -356,6 +371,12 @@ python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --rule-la
 
 ```powershell
 python .\scripts\llm_rule_prompt.py .\traces --metadata .\metadata.csv --split train --output llm_rule_prompt.md
+```
+
+默认会同时输出 `llm_rule_repoert.md`。如果只想生成 prompt，不生成报告：
+
+```powershell
+python .\scripts\llm_rule_prompt.py .\traces --output llm_rule_prompt.md --no-report
 ```
 
 也可以在 `scripts/run_experiments.py` 文件底部的 `if __name__ == "__main__":` 后写入参数，适合 IDE 运行：
