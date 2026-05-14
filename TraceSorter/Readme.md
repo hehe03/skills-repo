@@ -45,7 +45,21 @@ TraceSorter/
                 `-- labeled_rules.json
 ```
 
-旧路径 `scripts/rules/dynamic/unlabeled_rules.json`、`labeled_rules.json`、`llm_rules.json` 仍作为兼容路径保留，但新的主结构以上表为准。
+清空上一轮实验生成的动态规则：
+
+```powershell
+python .\scripts\clear_dynamic_rules.py
+```
+
+可选清理范围：
+
+```powershell
+python .\scripts\clear_dynamic_rules.py --methods non_llm
+python .\scripts\clear_dynamic_rules.py --methods llm
+python .\scripts\clear_dynamic_rules.py --methods all
+```
+
+该脚本只重置动态规则 JSON，不删除目录，也不修改 `scripts/rules/static/` 下的静态规则。
 
 ## 方法矩阵
 

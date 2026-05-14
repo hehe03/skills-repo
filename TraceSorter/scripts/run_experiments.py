@@ -28,10 +28,6 @@ LLM_NO_TRAIN_RULES = LLM_RULE_DIR / "no_train_rules.json"
 LLM_UNLABELED_RULES = LLM_RULE_DIR / "unlabeled_rules.json"
 LLM_LABELED_RULES = LLM_RULE_DIR / "labeled_rules.json"
 
-LEGACY_UNLABELED_RULES = DYNAMIC_RULE_DIR / "unlabeled_rules.json"
-LEGACY_LABELED_RULES = DYNAMIC_RULE_DIR / "labeled_rules.json"
-LEGACY_LLM_RULES = DYNAMIC_RULE_DIR / "llm_rules.json"
-
 METHODS = {
     "non_llm_no_train",
     "non_llm_unlabeled",
@@ -41,7 +37,7 @@ METHODS = {
     "llm_labeled",
 }
 
-LEGACY_ALIASES = {
+METHOD_ALIASES = {
     "general": "non_llm_no_train",
     "unlabeled": "non_llm_unlabeled",
     "labeled": "non_llm_labeled",
@@ -152,7 +148,7 @@ def parse_methods(value: str | None, bundle: DatasetBundle | None = None) -> Lis
             if bundle is None:
                 raise ValueError("llm alias requires loaded train/test data")
             raw = _llm_auto_method(bundle)
-        method = LEGACY_ALIASES.get(raw, raw)
+        method = METHOD_ALIASES.get(raw, raw)
         if method not in METHODS:
             raise ValueError(f"unsupported method: {raw}")
         if method not in methods:
@@ -183,12 +179,6 @@ def _write_rules_payload(path: Path, payload: Dict[str, Any]) -> int:
     }
     path.write_text(json.dumps(saved_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return len(rules)
-
-
-def _copy_payload(source: Path, target: Path) -> None:
-    if source.exists():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def _validate_train_data(method: str, train_records: List[TraceRecord]) -> None:
@@ -233,10 +223,8 @@ def generate_non_llm_rules(
     _validate_train_data(method, train_records)
     if method == "non_llm_unlabeled":
         rules = generate_unlabeled_rules(train_records, NON_LLM_UNLABELED_RULES, final_answer_config)
-        _copy_payload(NON_LLM_UNLABELED_RULES, LEGACY_UNLABELED_RULES)
     elif method == "non_llm_labeled":
         rules = generate_labeled_rules(records_with_labels(train_records), NON_LLM_LABELED_RULES, final_answer_config)
-        _copy_payload(NON_LLM_LABELED_RULES, LEGACY_LABELED_RULES)
     else:
         raise ValueError(f"not a non-LLM method: {method}")
     print(f"Generated {method} rules: {rules_path_for_method(method)} ({len(rules)} rules)")
@@ -293,8 +281,6 @@ def generate_llm_rules(
     payload = parse_llm_response(response)
     output_rules = rules_path_for_method(method)
     rule_count = _write_rules_payload(output_rules, payload)
-    if method == "llm_labeled":
-        _copy_payload(output_rules, LEGACY_LLM_RULES)
 
     report_path = (
         Path(args.llm_report_output)

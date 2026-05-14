@@ -73,6 +73,14 @@ scripts/rules/
 
 静态通用规则只维护在 `scripts/rules/static/general_rules.json`。动态规则由训练阶段写入 `scripts/rules/dynamic/` 下对应方法族目录。
 
+清空上一轮实验动态规则时运行：
+
+```powershell
+python .\scripts\clear_dynamic_rules.py
+```
+
+该脚本只把动态规则文件重置为空规则 payload，不删除目录，不修改静态规则。可用 `--methods llm`、`--methods non_llm` 或 `--methods all` 控制清理范围。
+
 ## 非 LLM 方法
 
 `non_llm_no_train` 不训练，只加载通用规则。通用规则覆盖解析失败、空 trace、无可观察步骤、错误文本、空结果比例高、重复动作、步数过多、存在 final answer 等信号。
