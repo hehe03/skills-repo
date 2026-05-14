@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
+from experiment_components.ablation_plans import AblationVariant, build_ablation_variants
+from experiment_components.contribution import summarize_result_components, summarize_rule_components
+from experiment_components.rule_filters import filter_rules, parse_component_csv
 from features import discover_default_final_answer_config, extract_features, load_final_answer_config
 from llm_rule_prompt import build_prompt_from_records, call_llm, parse_llm_response, write_llm_rule_report
 from metrics import confusion_and_scores
@@ -279,6 +282,11 @@ def generate_llm_rules(
     llm_output_path.write_text(response, encoding="utf-8")
 
     payload = parse_llm_response(response)
+    for rule in payload.get("rules") or []:
+        if isinstance(rule, dict):
+            rule.setdefault("layer", "llm")
+            rule.setdefault("component", "llm_rules")
+            rule.setdefault("source_method", method)
     output_rules = rules_path_for_method(method)
     rule_count = _write_rules_payload(output_rules, payload)
 
@@ -350,10 +358,30 @@ def predict_with_method(
     return results
 
 
+def _component_filter_note(args: argparse.Namespace) -> List[str]:
+    notes: List[str] = []
+    if args.enable_components:
+        notes.append(f"Enabled components: `{args.enable_components}`")
+    if args.disable_components:
+        notes.append(f"Disabled components: `{args.disable_components}`")
+    if args.ablation_plan != "none":
+        notes.append(f"Ablation plan: `{args.ablation_plan}`")
+    return notes
+
+
+def _filtered_rules(raw_rules: List[Dict[str, Any]], args: argparse.Namespace) -> List[Dict[str, Any]]:
+    return filter_rules(
+        raw_rules,
+        enable_components=parse_component_csv(args.enable_components),
+        disable_components=parse_component_csv(args.disable_components),
+    )
+
+
 def _method_notes(
     method: str,
     bundle: DatasetBundle,
     generated_rule_files: List[str],
+    args: argparse.Namespace | None = None,
 ) -> List[str]:
     scenario = method_training_scenario(method)
     notes = [
@@ -365,7 +393,121 @@ def _method_notes(
         f"Test samples: {len(bundle.test_records)}",
     ]
     notes.extend(f"Generated dynamic rule file: `{path}`" for path in generated_rule_files)
+    if args:
+        notes.extend(_component_filter_note(args))
     return notes
+
+
+def _format_component_tuple(values: tuple[str, ...]) -> str:
+    return ", ".join(f"`{value}`" for value in values) if values else ""
+
+
+def write_ablation_report(
+    path: str | Path,
+    *,
+    method: str,
+    trace_path: str,
+    metadata_path: str | None,
+    bundle: DatasetBundle,
+    raw_rule_count: int,
+    variants: List[AblationVariant],
+    results_by_variant: Dict[str, List[Dict[str, Any]]],
+    max_rows: int,
+    notes: List[str],
+) -> Path:
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    baseline_results = results_by_variant.get("baseline", [])
+    baseline_by_name = {row["name"]: row for row in baseline_results}
+    lines: List[str] = [
+        f"# Trace Sorter Component Ablation: {method}",
+        "",
+        f"- Trace path: `{trace_path}`",
+        f"- Metadata: `{metadata_path}`" if metadata_path else "- Metadata: none",
+        f"- Train source: `{bundle.train_source}`",
+        f"- Train samples: {len(bundle.train_records)}",
+        f"- Test source: `{bundle.test_source}`",
+        f"- Test samples: {len(bundle.test_records)}",
+        f"- Raw rules before component filtering: {raw_rule_count}",
+        "",
+    ]
+    if notes:
+        lines.extend(["## Run Notes", ""])
+        lines.extend(f"- {note}" for note in notes)
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Ablation Metrics",
+            "",
+            "| variant | rules | disabled components | enabled components | accuracy | precision(badcase) | recall(badcase) | f1(badcase) | tp | fp | tn | fn | changed vs baseline |",
+            "|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for variant in variants:
+        rows = results_by_variant[variant.name]
+        metrics = confusion_and_scores(rows)
+        changed = 0
+        if variant.name != "baseline":
+            for row in rows:
+                base = baseline_by_name.get(row["name"], {})
+                if row.get("predicted_label") != base.get("predicted_label"):
+                    changed += 1
+        lines.append(
+            f"| `{variant.name}` | {len(variant.rules)} | "
+            f"{_format_component_tuple(variant.disabled_components)} | "
+            f"{_format_component_tuple(variant.enabled_components)} | "
+            f"{metrics['accuracy']} | {metrics['precision']} | {metrics['recall']} | {metrics['f1']} | "
+            f"{metrics['tp']} | {metrics['fp']} | {metrics['tn']} | {metrics['fn']} | {changed} |"
+        )
+    lines.append("")
+
+    lines.extend(["## Baseline Component Rule Summary", ""])
+    lines.append("| component | rules | bad rules | good rules | weight sum |")
+    lines.append("|---|---:|---:|---:|---:|")
+    for row in summarize_rule_components(variants[0].rules):
+        lines.append(
+            f"| `{row['component']}` | {row['rules']} | {row['bad_rules']} | "
+            f"{row['good_rules']} | {round(row['weight_sum'], 4)} |"
+        )
+    lines.append("")
+
+    lines.extend(["## Baseline Component Hit Summary", ""])
+    lines.append("| component | cases hit | hits | bad score | good score | correct cases | incorrect cases |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    for row in summarize_result_components(baseline_results):
+        lines.append(
+            f"| `{row['component']}` | {row['cases']} | {row['hits']} | "
+            f"{round(row['bad_score'], 4)} | {round(row['good_score'], 4)} | "
+            f"{row['correct_cases']} | {row['incorrect_cases']} |"
+        )
+    lines.append("")
+
+    lines.extend(["## Prediction Changes", ""])
+    lines.append("| name | label | variant | baseline | variant prediction |")
+    lines.append("|---|---|---|---|---|")
+    change_rows = 0
+    for variant in variants:
+        if variant.name == "baseline":
+            continue
+        for row in results_by_variant[variant.name]:
+            base = baseline_by_name.get(row["name"], {})
+            if row.get("predicted_label") == base.get("predicted_label"):
+                continue
+            lines.append(
+                f"| `{row['name']}` | {row.get('label') or ''} | `{variant.name}` | "
+                f"{base.get('predicted_label', '')} | {row.get('predicted_label', '')} |"
+            )
+            change_rows += 1
+            if change_rows >= max_rows:
+                break
+        if change_rows >= max_rows:
+            break
+    if change_rows == 0:
+        lines.append("| none | | | | |")
+    lines.append("")
+    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return output
 
 
 def run_single_method(args: argparse.Namespace, method: str, bundle: DatasetBundle) -> Path:
@@ -374,7 +516,33 @@ def run_single_method(args: argparse.Namespace, method: str, bundle: DatasetBund
         load_final_answer_config(args.final_answer_config, args.final_answer_item),
     )
     generated_rule_files = train_method(method, bundle, final_answer_config, args)
-    rules = load_rules(rule_paths_for_method(method))
+    raw_rules = load_rules(rule_paths_for_method(method))
+    if args.ablation_plan != "none":
+        variants = build_ablation_variants(
+            raw_rules,
+            plan=args.ablation_plan,
+            enable_components=parse_component_csv(args.enable_components),
+            disable_components=parse_component_csv(args.disable_components),
+        )
+        results_by_variant = {
+            variant.name: predict_with_method(bundle.test_records, variant.rules, final_answer_config, args)
+            for variant in variants
+        }
+        output_path = Path(args.output) if args.output else default_report_path(args.output_dir, f"{method}_{args.ablation_plan}")
+        return write_ablation_report(
+            output_path,
+            method=method,
+            trace_path=args.trace_path,
+            metadata_path=args.metadata,
+            bundle=bundle,
+            raw_rule_count=len(raw_rules),
+            variants=variants,
+            results_by_variant=results_by_variant,
+            max_rows=args.max_rows,
+            notes=_method_notes(method, bundle, generated_rule_files, args),
+        )
+
+    rules = _filtered_rules(raw_rules, args)
     results = predict_with_method(bundle.test_records, rules, final_answer_config, args)
 
     output_path = Path(args.output) if args.output else default_report_path(args.output_dir, method)
@@ -386,7 +554,7 @@ def run_single_method(args: argparse.Namespace, method: str, bundle: DatasetBund
         rules=rules,
         results=results,
         max_rows=args.max_rows,
-        notes=_method_notes(method, bundle, generated_rule_files),
+        notes=_method_notes(method, bundle, generated_rule_files, args),
     )
 
 
@@ -401,7 +569,7 @@ def run_methods_comparison(args: argparse.Namespace, methods: List[str], bundle:
 
     for method in methods:
         generated_by_method[method] = train_method(method, bundle, final_answer_config, args)
-        rules = load_rules(rule_paths_for_method(method))
+        rules = _filtered_rules(load_rules(rule_paths_for_method(method)), args)
         rules_by_method[method] = rules
         results_by_method[method] = predict_with_method(bundle.test_records, rules, final_answer_config, args)
 
@@ -417,12 +585,17 @@ def run_methods_comparison(args: argparse.Namespace, methods: List[str], bundle:
         f"- Test source: `{bundle.test_source}`",
         f"- Test samples: {len(bundle.test_records)}",
         f"- Methods: {', '.join(methods)}",
-        "",
-        "## Method Structure",
-        "",
-        "| method | family | training scenario | rules loaded | generated rule files |",
-        "|---|---|---|---:|---|",
     ]
+    lines.extend(f"- {note}" for note in _component_filter_note(args))
+    lines.extend(
+        [
+            "",
+            "## Method Structure",
+            "",
+            "| method | family | training scenario | rules loaded | generated rule files |",
+            "|---|---|---|---:|---|",
+        ]
+    )
     for method in methods:
         generated = ", ".join(f"`{path}`" for path in generated_by_method[method]) or ""
         lines.append(
@@ -487,6 +660,70 @@ def run_methods_comparison(args: argparse.Namespace, methods: List[str], bundle:
     return output_path
 
 
+def run_methods_ablation_comparison(args: argparse.Namespace, methods: List[str], bundle: DatasetBundle) -> Path:
+    final_answer_config = discover_default_final_answer_config(
+        bundle.train_records or bundle.all_records,
+        load_final_answer_config(args.final_answer_config, args.final_answer_item),
+    )
+    output_path = Path(args.output) if args.output else default_report_path(args.output_dir, "methods_component_ablation")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    lines: List[str] = [
+        "# Trace Sorter Methods Component Ablation",
+        "",
+        f"- Trace path: `{args.trace_path}`",
+        f"- Metadata: `{args.metadata}`" if args.metadata else "- Metadata: none",
+        f"- Train source: `{bundle.train_source}`",
+        f"- Train samples: {len(bundle.train_records)}",
+        f"- Test source: `{bundle.test_source}`",
+        f"- Test samples: {len(bundle.test_records)}",
+        f"- Methods: {', '.join(methods)}",
+        f"- Ablation plan: `{args.ablation_plan}`",
+    ]
+    lines.extend(f"- {note}" for note in _component_filter_note(args) if not note.startswith("Ablation plan:"))
+    lines.extend(
+        [
+            "",
+            "## Metrics",
+            "",
+            "| method | variant | rules | disabled components | enabled components | accuracy | precision(badcase) | recall(badcase) | f1(badcase) | tp | fp | tn | fn | changed vs baseline |",
+            "|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for method in methods:
+        train_method(method, bundle, final_answer_config, args)
+        raw_rules = load_rules(rule_paths_for_method(method))
+        variants = build_ablation_variants(
+            raw_rules,
+            plan=args.ablation_plan,
+            enable_components=parse_component_csv(args.enable_components),
+            disable_components=parse_component_csv(args.disable_components),
+        )
+        results_by_variant = {
+            variant.name: predict_with_method(bundle.test_records, variant.rules, final_answer_config, args)
+            for variant in variants
+        }
+        baseline_by_name = {row["name"]: row for row in results_by_variant.get("baseline", [])}
+        for variant in variants:
+            rows = results_by_variant[variant.name]
+            metrics = confusion_and_scores(rows)
+            changed = 0
+            if variant.name != "baseline":
+                for row in rows:
+                    base = baseline_by_name.get(row["name"], {})
+                    if row.get("predicted_label") != base.get("predicted_label"):
+                        changed += 1
+            lines.append(
+                f"| `{method}` | `{variant.name}` | {len(variant.rules)} | "
+                f"{_format_component_tuple(variant.disabled_components)} | "
+                f"{_format_component_tuple(variant.enabled_components)} | "
+                f"{metrics['accuracy']} | {metrics['precision']} | {metrics['recall']} | {metrics['f1']} | "
+                f"{metrics['tp']} | {metrics['fp']} | {metrics['tn']} | {metrics['fn']} | {changed} |"
+            )
+    lines.append("")
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return output_path
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train rule methods and test Agent trace goodcase/badcase classification."
@@ -535,6 +772,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--bad-threshold", type=float, default=0.60)
     parser.add_argument("--good-threshold", type=float, default=0.50)
+    parser.add_argument(
+        "--enable-components",
+        help="Comma-separated rule components to keep. When omitted, all components are enabled before --disable-components is applied.",
+    )
+    parser.add_argument(
+        "--disable-components",
+        help="Comma-separated rule components to remove from loaded rules, for component ablation or manual filtering.",
+    )
+    parser.add_argument(
+        "--ablation-plan",
+        choices=["none", "leave_one_component_out", "only_one_component"],
+        default="none",
+        help="Run component ablation variants after training. Default keeps the normal single run behavior.",
+    )
     parser.add_argument("--output-dir", default="./results", help="Directory used for auto-named Markdown reports.")
     parser.add_argument("--output", help="Explicit Markdown output file path. Overrides --output-dir auto naming.")
     parser.add_argument("--max-rows", type=int, default=200)
@@ -577,11 +828,12 @@ def main(argv: List[str] | None = None) -> None:
     methods = parse_methods(args.methods, bundle) if args.methods else parse_methods(args.method, bundle)
     if not methods:
         raise ValueError("No method selected.")
-    report_path = (
-        run_methods_comparison(args, methods, bundle)
-        if len(methods) > 1
-        else run_single_method(args, methods[0], bundle)
-    )
+    if len(methods) > 1 and args.ablation_plan != "none":
+        report_path = run_methods_ablation_comparison(args, methods, bundle)
+    elif len(methods) > 1:
+        report_path = run_methods_comparison(args, methods, bundle)
+    else:
+        report_path = run_single_method(args, methods[0], bundle)
     print(f"Wrote report: {report_path}")
 
 
@@ -589,10 +841,5 @@ if __name__ == "__main__":
     # You may write parameters here when running this file from an IDE.
     # Example:
     # SCRIPT_ARGS = [r".\traces", "--method", "non_llm_no_train", "--output-dir", r".\results"]
-    #使用 trace-sorter skill，对 .\trace 和 .\metadata.csv 运行实验。
-# 训练 split=train，测试 split=test。
-# 比较 llm_no_train、llm_unlabeled、llm_labeled。
-# 输出到 .\results\llm_methods_compare.md。
-# LLM 规则请由你当前 Agent 自己根据 prompt 生成，不要依赖 call_llm 外部接口。
     SCRIPT_ARGS = None
     main(SCRIPT_ARGS)

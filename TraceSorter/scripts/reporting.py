@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from metrics import confusion_and_scores
+from experiment_components.contribution import summarize_result_components, summarize_rule_components
 
 
 def safe_method_name(method: str) -> str:
@@ -20,9 +21,44 @@ def _rule_summary(rules: Iterable[Dict[str, Any]]) -> List[str]:
     lines = []
     for rule in rules:
         lines.append(
-            f"| `{rule.get('id')}` | {rule.get('layer', '')} | {rule.get('label', '')} | "
+            f"| `{rule.get('id')}` | {rule.get('component', '')} | {rule.get('feature_group', '')} | "
+            f"{rule.get('layer', '')} | {rule.get('label', '')} | "
             f"{rule.get('weight', '')} | {rule.get('description', '')} |"
         )
+    return lines
+
+
+def _component_rule_summary(rules: List[Dict[str, Any]]) -> List[str]:
+    rows = summarize_rule_components(rules)
+    lines = ["## Component Rule Summary", ""]
+    lines.append("| component | rules | bad rules | good rules | weight sum | description |")
+    lines.append("|---|---:|---:|---:|---:|---|")
+    if not rows:
+        lines.append("| none | 0 | 0 | 0 | 0 | |")
+    for row in rows:
+        description = str(row.get("description", "")).replace("|", "\\|")
+        lines.append(
+            f"| `{row['component']}` | {row['rules']} | {row['bad_rules']} | "
+            f"{row['good_rules']} | {round(row['weight_sum'], 4)} | {description} |"
+        )
+    lines.append("")
+    return lines
+
+
+def _component_hit_summary(results: List[Dict[str, Any]]) -> List[str]:
+    rows = summarize_result_components(results)
+    lines = ["## Component Hit Summary", ""]
+    lines.append("| component | cases hit | hits | bad score | good score | correct cases | incorrect cases |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    if not rows:
+        lines.append("| none | 0 | 0 | 0 | 0 | 0 | 0 |")
+    for row in rows:
+        lines.append(
+            f"| `{row['component']}` | {row['cases']} | {row['hits']} | "
+            f"{round(row['bad_score'], 4)} | {round(row['good_score'], 4)} | "
+            f"{row['correct_cases']} | {row['incorrect_cases']} |"
+        )
+    lines.append("")
     return lines
 
 
@@ -73,8 +109,10 @@ def write_report(
         lines.append("## Run Notes")
         lines.append("")
         lines.extend(f"- {note}" for note in notes)
-        lines.append("")
+    lines.append("")
     lines.extend(_final_answer_summary(results))
+    lines.extend(_component_rule_summary(rules))
+    lines.extend(_component_hit_summary(results))
     if metrics["count"]:
         lines.append("## Metrics")
         lines.append("")
@@ -90,8 +128,8 @@ def write_report(
         lines.append("")
     lines.append("## Rules Used")
     lines.append("")
-    lines.append("| id | layer | label | weight | description |")
-    lines.append("|---|---|---|---:|---|")
+    lines.append("| id | component | feature group | layer | label | weight | description |")
+    lines.append("|---|---|---|---|---|---:|---|")
     lines.extend(_rule_summary(rules) or ["| none | | | | |"])
     lines.append("")
     lines.append("## Predictions")

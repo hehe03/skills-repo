@@ -13,6 +13,9 @@ class RuleHit:
     label: str
     weight: float
     description: str
+    component: str = "custom_rules"
+    feature_group: str = "unknown"
+    source_method: str = "unknown"
 
 
 def load_rules(paths: Iterable[str | Path]) -> List[Dict[str, Any]]:
@@ -113,6 +116,9 @@ def classify_features(
             label=label,
             weight=weight,
             description=str(rule.get("description", "")),
+            component=str(rule.get("component", "custom_rules")),
+            feature_group=str(rule.get("feature_group", "unknown")),
+            source_method=str(rule.get("source_method", "unknown")),
         )
         hits.append(hit)
         if label == "goodcase":

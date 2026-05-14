@@ -54,6 +54,16 @@ def _safe_rule_id(text: str, max_chars: int = 80) -> str:
     return (cleaned or "field")[:max_chars]
 
 
+def _fixed_feature_group(feature: str) -> str:
+    if "result" in feature:
+        return "result_quality"
+    if "error" in feature:
+        return "error_signal"
+    if "repeated" in feature or "consecutive" in feature:
+        return "loop_repetition"
+    return "structure"
+
+
 def _dynamic_paths(rows: List[Dict[str, Any]]) -> List[str]:
     paths: set[str] = set()
     for row in rows:
@@ -122,6 +132,9 @@ def _dynamic_unlabeled_field_rules(feature_rows: List[Dict[str, Any]]) -> List[D
                 {
                     "id": f"unlabeled_missing_common_field_{field_id}",
                     "layer": "unlabeled",
+                    "component": "unlabeled_field_presence",
+                    "feature_group": "dynamic_fields",
+                    "source_method": "non_llm_unlabeled",
                     "label": "badcase",
                     "weight": 0.20,
                     "description": f"Field `{path}` is common in unlabeled train traces but missing in this trace.",
@@ -135,6 +148,9 @@ def _dynamic_unlabeled_field_rules(feature_rows: List[Dict[str, Any]]) -> List[D
                 {
                     "id": f"unlabeled_empty_common_field_{field_id}",
                     "layer": "unlabeled",
+                    "component": "unlabeled_field_presence",
+                    "feature_group": "dynamic_fields",
+                    "source_method": "non_llm_unlabeled",
                     "label": "badcase",
                     "weight": 0.20,
                     "description": f"Field `{path}` is usually non-empty in unlabeled train traces but empty in this trace.",
@@ -158,10 +174,13 @@ def _dynamic_labeled_field_rules(good_rows: List[Dict[str, Any]], bad_rows: List
         field_id = _safe_rule_id(path)
         if bad_presence - good_presence >= 0.50:
             rules.append(
-                {
-                    "id": f"labeled_bad_field_present_{field_id}",
-                    "layer": "labeled",
-                    "label": "badcase",
+                    {
+                        "id": f"labeled_bad_field_present_{field_id}",
+                        "layer": "labeled",
+                        "component": "labeled_field_presence",
+                        "feature_group": "dynamic_fields",
+                        "source_method": "non_llm_labeled",
+                        "label": "badcase",
                     "weight": 0.30,
                     "description": f"Field `{path}` appears much more often in labeled badcase train traces.",
                     "all": [{"feature": f"field_exists:{path}", "op": "==", "value": True}],
@@ -169,20 +188,26 @@ def _dynamic_labeled_field_rules(good_rows: List[Dict[str, Any]], bad_rows: List
             )
         elif good_presence - bad_presence >= 0.50:
             rules.append(
-                {
-                    "id": f"labeled_good_field_present_{field_id}",
-                    "layer": "labeled",
-                    "label": "goodcase",
+                    {
+                        "id": f"labeled_good_field_present_{field_id}",
+                        "layer": "labeled",
+                        "component": "labeled_field_presence",
+                        "feature_group": "dynamic_fields",
+                        "source_method": "non_llm_labeled",
+                        "label": "goodcase",
                     "weight": 0.25,
                     "description": f"Field `{path}` appears much more often in labeled goodcase train traces.",
                     "all": [{"feature": f"field_exists:{path}", "op": "==", "value": True}],
                 }
             )
             rules.append(
-                {
-                    "id": f"labeled_bad_missing_good_field_{field_id}",
-                    "layer": "labeled",
-                    "label": "badcase",
+                    {
+                        "id": f"labeled_bad_missing_good_field_{field_id}",
+                        "layer": "labeled",
+                        "component": "labeled_field_presence",
+                        "feature_group": "dynamic_fields",
+                        "source_method": "non_llm_labeled",
+                        "label": "badcase",
                     "weight": 0.25,
                     "description": f"Field `{path}` is common in goodcase train traces but often absent from badcase traces.",
                     "all": [{"feature": f"field_exists:{path}", "op": "==", "value": False}],
@@ -198,10 +223,13 @@ def _dynamic_labeled_field_rules(good_rows: List[Dict[str, Any]], bad_rows: List
             good_rate = good_values.get(value, 0) / len(good_rows)
             if bad_rate - good_rate >= 0.50:
                 rules.append(
-                    {
-                        "id": f"labeled_bad_value_{field_id}_{_safe_rule_id(value, 32)}",
-                        "layer": "labeled",
-                        "label": "badcase",
+                        {
+                            "id": f"labeled_bad_value_{field_id}_{_safe_rule_id(value, 32)}",
+                            "layer": "labeled",
+                            "component": "labeled_field_value",
+                            "feature_group": "dynamic_fields",
+                            "source_method": "non_llm_labeled",
+                            "label": "badcase",
                         "weight": 0.35,
                         "description": f"Value `{value}` in field `{path}` is much more common in badcase train traces.",
                         "all": [{"feature": f"field_text:{path}", "op": "contains", "value": value}],
@@ -215,10 +243,13 @@ def _dynamic_labeled_field_rules(good_rows: List[Dict[str, Any]], bad_rows: List
             bad_rate = bad_values.get(value, 0) / len(bad_rows)
             if good_rate - bad_rate >= 0.50:
                 rules.append(
-                    {
-                        "id": f"labeled_good_value_{field_id}_{_safe_rule_id(value, 32)}",
-                        "layer": "labeled",
-                        "label": "goodcase",
+                        {
+                            "id": f"labeled_good_value_{field_id}_{_safe_rule_id(value, 32)}",
+                            "layer": "labeled",
+                            "component": "labeled_field_value",
+                            "feature_group": "dynamic_fields",
+                            "source_method": "non_llm_labeled",
+                            "label": "goodcase",
                         "weight": 0.30,
                         "description": f"Value `{value}` in field `{path}` is much more common in goodcase train traces.",
                         "all": [{"feature": f"field_text:{path}", "op": "contains", "value": value}],
@@ -239,6 +270,9 @@ def _dynamic_labeled_field_rules(good_rows: List[Dict[str, Any]], bad_rows: List
                 {
                     "id": f"labeled_bad_high_field_number_{field_id}",
                     "layer": "labeled",
+                    "component": "labeled_field_numeric",
+                    "feature_group": "dynamic_fields",
+                    "source_method": "non_llm_labeled",
                     "label": "badcase",
                     "weight": 0.30,
                     "description": f"Numeric field `{path}` is higher in badcase train traces.",
@@ -250,6 +284,9 @@ def _dynamic_labeled_field_rules(good_rows: List[Dict[str, Any]], bad_rows: List
                 {
                     "id": f"labeled_good_high_field_number_{field_id}",
                     "layer": "labeled",
+                    "component": "labeled_field_numeric",
+                    "feature_group": "dynamic_fields",
+                    "source_method": "non_llm_labeled",
                     "label": "goodcase",
                     "weight": 0.25,
                     "description": f"Numeric field `{path}` is higher in goodcase train traces.",
@@ -279,6 +316,9 @@ def generate_unlabeled_rules(
             {
                 "id": f"unlabeled_high_{feature}",
                 "layer": "unlabeled",
+                "component": "unlabeled_numeric_quantile",
+                "feature_group": _fixed_feature_group(feature),
+                "source_method": "non_llm_unlabeled",
                 "label": "badcase",
                 "weight": 0.25,
                 "description": f"{feature} is high relative to the unlabeled trace cohort.",
@@ -291,6 +331,9 @@ def generate_unlabeled_rules(
             {
                 "id": "unlabeled_missing_final_when_cohort_has_finals",
                 "layer": "unlabeled",
+                "component": "unlabeled_final_answer",
+                "feature_group": "final_answer",
+                "source_method": "non_llm_unlabeled",
                 "label": "badcase",
                 "weight": 0.35,
                 "description": "Most comparable traces expose a final answer, but this one does not.",
@@ -340,6 +383,9 @@ def generate_labeled_rules(
             {
                 "id": f"labeled_bad_high_{feature}",
                 "layer": "labeled",
+                "component": "labeled_numeric_diff",
+                "feature_group": _fixed_feature_group(feature),
+                "source_method": "non_llm_labeled",
                 "label": "badcase",
                 "weight": 0.35,
                 "description": f"Labeled badcase train traces have higher {feature} than goodcase traces.",
@@ -354,6 +400,9 @@ def generate_labeled_rules(
             {
                 "id": "labeled_missing_final_answer",
                 "layer": "labeled",
+                "component": "labeled_final_answer_diff",
+                "feature_group": "final_answer",
+                "source_method": "non_llm_labeled",
                 "label": "badcase",
                 "weight": 0.45,
                 "description": "Missing final answer is more common in labeled badcase train traces.",
@@ -367,6 +416,9 @@ def generate_labeled_rules(
             {
                 "id": "labeled_has_final_answer_support",
                 "layer": "labeled",
+                "component": "labeled_final_answer_diff",
+                "feature_group": "final_answer",
+                "source_method": "non_llm_labeled",
                 "label": "goodcase",
                 "weight": 0.25,
                 "description": "Final answer presence is more common in labeled goodcase train traces.",

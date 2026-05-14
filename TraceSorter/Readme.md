@@ -31,6 +31,7 @@ TraceSorter/
     |-- rule_engine.py              # 规则匹配和 good/bad 分数汇聚
     |-- metrics.py                  # 指标计算
     |-- reporting.py                # Markdown 报告输出
+    |-- experiment_components/      # 组件标签、规则过滤、消融计划、贡献统计
     `-- rules/
         |-- static/
         |   |-- general_rules.json
@@ -80,6 +81,51 @@ python .\scripts\clear_dynamic_rules.py --methods all
 | `unlabeled` | `non_llm_unlabeled` |
 | `labeled` | `non_llm_labeled` |
 | `llm` | 根据训练数据自动映射为 `llm_labeled`、`llm_unlabeled` 或 `llm_no_train` |
+
+## 组件化消融
+
+当前项目把已有规则按组件自动标注，便于观察每类证据的作用。默认运行不改变原有分类逻辑；只有显式指定组件过滤或消融参数时才会改变加载的规则集合。
+
+常见组件包括：
+
+```text
+static_hard_failure
+static_structure
+static_error_signal
+static_result_quality
+static_loop_repetition
+static_final_answer
+static_good_support
+unlabeled_numeric_quantile
+unlabeled_final_answer
+unlabeled_field_presence
+labeled_numeric_diff
+labeled_final_answer_diff
+labeled_field_presence
+labeled_field_value
+labeled_field_numeric
+llm_rules
+```
+
+只禁用某些组件：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --method non_llm_no_train --disable-components static_final_answer
+```
+
+运行当前方法的 leave-one-component-out 消融：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --train-split train --eval-split test --method non_llm_labeled --ablation-plan leave_one_component_out
+```
+
+运行 only-one-component 消融：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --method non_llm_no_train --ablation-plan only_one_component
+```
+
+消融报告会输出每个组件组合的指标、规则数量、被禁用或启用的组件、相对 baseline 发生变化的 case，以及 baseline 下各组件的规则数和命中贡献。
 
 ## 系统说明图
 
