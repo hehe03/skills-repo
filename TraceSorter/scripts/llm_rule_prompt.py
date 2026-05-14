@@ -458,27 +458,27 @@ def build_prompt_from_records(
     schema = {
         "rules": [
             {
-                "id": "short_snake_case_rule_id",
+                "id": "<string: unique_rule_id>",
                 "layer": "llm",
-                "label": "badcase or goodcase",
-                "weight": 0.25,
-                "description": "Human-readable explanation.",
-                "all": [{"feature": "feature_name", "op": ">=", "value": 1}],
-                "any": [{"feature": "feature_name", "op": "==", "value": True}],
+                "label": "<badcase|goodcase>",
+                "weight": "<number: 0.0-1.0>",
+                "description": "<string: why this rule helps classification>",
+                "all": [{"feature": "<feature_name>", "op": "<operator>", "value": "<literal_value>"}],
+                "any": [{"feature": "<feature_name>", "op": "<operator>", "value": "<literal_value>"}],
             }
         ],
         "final_answer_config": {
-            "top_level_keys": ["business_result"],
-            "nested_keys": ["business_result", "summary_text"],
-            "final_answer_items": ["business_result:*", "status: *success*"],
+            "top_level_keys": ["<field_name_if_discovered>"],
+            "nested_keys": ["<nested_field_name_if_discovered>"],
+            "final_answer_items": ["<field_name_if_discovered>:*"],
             "assistant_roles": ["assistant"],
             "assistant_content_keys": ["content"],
             "min_chars": 1,
             "evidence_source": "llm",
-            "rationale": "Why these fields appear to represent final answers.",
+            "rationale": "<string: why these fields represent final answers>",
         },
         "proposed_features": [
-            {"name": "new_feature_name", "description": "Only if an important feature is missing."}
+            {"name": "<new_feature_name>", "description": "<string: only if an important feature is missing>"}
         ],
     }
     scenario_guidance = {
@@ -521,6 +521,7 @@ def build_prompt_from_records(
         "",
         "Important input design:",
         "- The prompt may omit full traces when the train set is large.",
+        "- Values wrapped in <angle_brackets> inside the schema are placeholders; do not copy them into the final JSON.",
         "- Use dataset_summary and label_contrasts before relying on individual sample excerpts.",
         "- In labeled mode, selected_samples is balanced to include goodcase and badcase when available.",
         "- Prefer dynamic field rules such as field_exists:<path>, field_text:<path>, or field_number_mean:<path> when a concrete trace field is informative.",

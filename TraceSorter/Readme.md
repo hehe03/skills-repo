@@ -257,10 +257,10 @@ def call_llm(
 命令行示例：
 
 ```powershell
-python .\scripts\run_experiments.py .\traces --final-answer-item "business_result:*" --final-answer-item "status: *success*"
+python .\scripts\run_experiments.py .\traces --final-answer-item "your_final_answer_key:*"
 ```
 
-`key:value`、`key: value`、`key : value` 都兼容，`*` 表示任意字符。
+上面的 `your_final_answer_key` 是占位字段名；实际使用时应替换成你的业务 trace 中代表最终结果的字段。`key:value`、`key: value`、`key : value` 都兼容，`*` 表示任意字符。
 
 ## 常用命令
 
