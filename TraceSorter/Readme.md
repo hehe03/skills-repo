@@ -81,31 +81,28 @@ python .\scripts\clear_dynamic_rules.py --methods all
 | `labeled` | `non_llm_labeled` |
 | `llm` | 根据训练数据自动映射为 `llm_labeled`、`llm_unlabeled` 或 `llm_no_train` |
 
-## 总流程图
+## 系统说明图
 
 ```mermaid
-flowchart TD
-    A["测试 trace: --trace_path"] --> B["读取测试集"]
-    AM["测试 metadata: --metadata"] --> B
-    T["训练 trace: --train-trace-path 或 --train-split"] --> C["读取训练集"]
-    TM["训练 metadata: --train-metadata 或 --metadata"] --> C
-    B --> D["确定测试样本: --eval-split 或全部"]
-    C --> X["抽取训练特征表<br/>通用特征 + 动态字段特征<br/>无训练时为空"]
-    X --> E{"选择方法"}
-    E -->|non_llm_no_train| F["无训练阶段<br/>加载静态通用规则"]
-    E -->|non_llm_unlabeled| G["非 LLM 无标注训练<br/>分位数/字段异常规则"]
-    E -->|non_llm_labeled| H["非 LLM 有标注训练<br/>good/bad 特征和字段差异规则"]
-    E -->|llm_no_train| I["LLM 无训练<br/>基于特征说明生成规则"]
-    E -->|llm_unlabeled| J["LLM 无标注训练<br/>基于样本字段和特征生成异常规则"]
-    E -->|llm_labeled| K["LLM 有标注训练<br/>基于标签差异和业务字段生成规则"]
-    F --> L["规则引擎测试"]
-    G --> L
-    H --> L
-    I --> L
-    J --> L
-    K --> L
-    D --> L
-    L --> M["输出 Markdown 报告"]
+flowchart LR
+    A["输入数据<br/>测试 trace<br/>可选 metadata / 训练 trace / 用户要求"] --> B{"Skill 智能选择<br/>输入场景 + 方法族"}
+
+    B -->|无训练数据| C["通用方法<br/>静态规则<br/>或 LLM 保守规则"]
+    B -->|无标注训练数据| D["抽取训练特征<br/>通用特征 + 动态字段特征"]
+    B -->|有标注训练数据| D
+
+    D --> E{"动态规则生成"}
+    E -->|非 LLM| F["统计/字段模式<br/>分位数、标签差异、字段缺失或取值"]
+    E -->|LLM| G["语义归纳<br/>阅读样本摘要、字段特征和标签对比"]
+
+    C --> H["规则库<br/>static + dynamic"]
+    F --> H
+    G --> H
+
+    A --> I["测试特征抽取<br/>特征"]
+    H --> J["规则引擎<br/>规则命中与分数汇聚"]
+    I --> J
+    J --> K["分类结果<br/>goodcase / badcase<br/>可解释报告"]
 ```
 
 ## 训练与测试数据
