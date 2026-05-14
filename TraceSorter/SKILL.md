@@ -11,6 +11,21 @@ description: >-
 
 使用本 skill 将 Agent trace 分类为 `goodcase` 或 `badcase`。所有方法最终都产出或加载规则，并由同一个规则引擎执行分类。
 
+## Agent 执行原则
+
+当用户只给出 trace 路径、metadata 路径、训练/测试 split 和实验目标时，Agent 应自行选择脚本和流程，不要求用户说明内部函数或逐步命令。
+
+如果用户要求比较 LLM 方法，且明确或隐含希望“由当前 Agent 自身生成规则”“不要配置外部 LLM/API”“不要依赖 `call_llm()`”，则 Agent 应自动执行以下策略：
+
+1. 使用 `scripts/run_agent_llm_workflow.py` 生成 prompt 和任务清单。
+2. 读取任务清单和每个 prompt。
+3. 用当前 Agent 自身推理能力生成规则 JSON。
+4. 写入任务清单指定的 `scripts/rules/dynamic/llm/*.json`。
+5. 运行任务清单中的评估命令。
+6. 向用户汇报报告路径和三种 LLM 方法的效果差异。
+
+只有当用户明确要求 Python 自动调用外部模型时，才使用会触发 `call_llm()` 的 LLM 实验路径。
+
 ## 方法结构
 
 方法按两个维度选择：
@@ -93,6 +108,14 @@ LLM prompt 不默认传入全量 trace。它包含：
 - `selected_samples`：代表样本，包含压缩特征和截断后的 `trace_excerpt`。
 
 有标注场景必须尽量包含正负样例；无标注场景按长度、错误、final-answer 和字段路径差异做多样性采样。可通过 `--llm-max-samples`、`--llm-max-prompt-chars`、`--llm-max-trace-chars`、`--llm-max-dynamic-fields` 控制输入规模。
+
+当用户要求“由当前 Agent 自身生成 LLM 规则，不依赖 Python 的 `call_llm()`”时，优先使用 Agent 专用入口：
+
+```powershell
+python .\scripts\run_agent_llm_workflow.py .\data\trace --metadata .\data\metadata.csv --train-split train --eval-split test --methods llm_no_train,llm_unlabeled,llm_labeled --output-dir .\results --report-output .\results\llm_methods_compare.md
+```
+
+该入口只生成 prompt 和任务清单，不调用外部模型。Agent 应按 `results/agent_llm_tasks.md` 逐个读取 prompt，用自身 LLM 能力生成规则 JSON，写入清单指定的 `scripts/rules/dynamic/llm/*.json`，然后运行清单里的评估命令。评估命令会带 `--llm-use-existing-rules`，因此不会触发 `call_llm()`。
 
 `call_llm()` 签名：
 

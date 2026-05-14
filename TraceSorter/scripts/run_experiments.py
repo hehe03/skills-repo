@@ -324,6 +324,10 @@ def train_method(
     if family == "non_llm":
         generated = generate_non_llm_rules(method, bundle.train_records, final_answer_config)
         return [generated] if generated else []
+    if args.llm_use_existing_rules:
+        _validate_train_data(method, bundle.train_records)
+        print(f"Using existing LLM rules without calling call_llm(): {rules_path_for_method(method)}")
+        return []
     return [generate_llm_rules(method, bundle.train_records, final_answer_config, args)]
 
 
@@ -569,6 +573,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm-output", help="Path for raw LLM response JSON.")
     parser.add_argument("--llm-prompt-output", help="Path for generated LLM prompt.")
     parser.add_argument("--llm-report-output", help="Path for Chinese LLM rule report.")
+    parser.add_argument(
+        "--llm-use-existing-rules",
+        action="store_true",
+        help="For Agent-driven workflows: load existing LLM rule files and do not call call_llm().",
+    )
     parser.add_argument("--llm-max-samples", type=int, default=30, help="Maximum representative train samples included in the LLM prompt.")
     parser.add_argument("--llm-max-prompt-chars", type=int, default=60000, help="Maximum LLM prompt characters before truncation.")
     parser.add_argument("--llm-max-trace-chars", type=int, default=2000, help="Maximum raw trace excerpt characters per selected sample.")
@@ -594,5 +603,10 @@ if __name__ == "__main__":
     # You may write parameters here when running this file from an IDE.
     # Example:
     # SCRIPT_ARGS = [r".\traces", "--method", "non_llm_no_train", "--output-dir", r".\results"]
+    #使用 trace-sorter skill，对 .\trace 和 .\metadata.csv 运行实验。
+# 训练 split=train，测试 split=test。
+# 比较 llm_no_train、llm_unlabeled、llm_labeled。
+# 输出到 .\results\llm_methods_compare.md。
+# LLM 规则请由你当前 Agent 自己根据 prompt 生成，不要依赖 call_llm 外部接口。
     SCRIPT_ARGS = None
     main(SCRIPT_ARGS)
