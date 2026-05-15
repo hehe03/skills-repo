@@ -21,10 +21,14 @@ TraceSorter/
 |-- SKILL.md
 |-- Readme.md
 |-- compare.md
+|-- ablation_experiment_plan.md
 `-- scripts/
     |-- run_experiments.py          # 批量实验入口：训练 + 测试
+    |-- run_ablation_study.py       # precision-first 组件消融研究入口
     |-- run_trace_analysis.py       # 单次/批量直接分类入口：只测试，不训练
     |-- llm_rule_prompt.py          # LLM prompt、call_llm 钩子、LLM 规则报告
+    |-- llm_config.py               # LLM YAML 配置加载
+    |-- llm_config.yaml             # LLM 默认配置
     |-- trace_io.py                 # trace 和 metadata 读取
     |-- features.py                 # trace 特征抽取、final-answer 识别
     |-- rule_generation.py          # 非 LLM 动态规则生成
@@ -107,25 +111,15 @@ labeled_field_numeric
 llm_rules
 ```
 
-只禁用某些组件：
+组件消融统一由 `scripts/run_ablation_study.py` 编排。该入口会按 precision 优先的完整方案批量运行消融，并把关键结果聚合到一个总报告：
 
 ```powershell
-python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --method non_llm_no_train --disable-components static_final_answer
+python .\scripts\run_ablation_study.py .\traces --metadata .\metadata.csv --train-split train --eval-split test --methods non_llm_labeled
 ```
 
-运行当前方法的 leave-one-component-out 消融：
+该入口对应项目根目录下的 `ablation_experiment_plan.md`。总报告会按 `precision(badcase)` 优先、`recall(badcase)` 次之排序，并聚合 baseline、leave-one-component-out、only-one-component、targeted subsets、case 变化和推荐候选。
 
-```powershell
-python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --train-split train --eval-split test --method non_llm_labeled --ablation-plan leave_one_component_out
-```
-
-运行 only-one-component 消融：
-
-```powershell
-python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --method non_llm_no_train --ablation-plan only_one_component
-```
-
-消融报告会输出每个组件组合的指标、规则数量、被禁用或启用的组件、相对 baseline 发生变化的 case，以及 baseline 下各组件的规则数和命中贡献。
+`scripts/run_experiments.py` 只负责普通训练、测试和多方法对比，不再承载组件消融参数。
 
 ## 系统说明图
 
@@ -274,14 +268,13 @@ LLM 方法使用 `scripts/llm_rule_prompt.py`：
 - 每条代表样本默认最多保留 `80` 个动态字段路径。
 - Prompt 默认最多 `60000` 字符，超过后会减少代表样本并截断。
 
-相关参数：
+相关配置写在 `scripts/llm_config.yaml`，入口脚本通过 `--llm-config` 指定：
 
 ```powershell
---llm-max-samples 30
---llm-max-prompt-chars 60000
---llm-max-trace-chars 2000
---llm-max-dynamic-fields 80
+python .\scripts\run_experiments.py .\traces --method llm_labeled --llm-config .\scripts\llm_config.yaml
 ```
+
+常用字段包括 `provider`、`model`、`temperature`、`use_existing_rules`、`max_samples`、`max_prompt_chars`、`max_trace_chars` 和 `max_dynamic_fields`。
 
 这样的设计让 LLM 既能看到整体分布，也能看到足够多样的具体样例；在有标注场景中，还能明确比较正负样本差异。
 
@@ -323,13 +316,13 @@ Agent 执行步骤：
 4. 写入任务清单中对应的 `scripts/rules/dynamic/llm/*.json`。
 5. 运行清单给出的评估命令。
 
-评估命令会自动带上：
+评估命令会自动带上一个生成的 LLM 配置文件，例如：
 
 ```powershell
---llm-use-existing-rules
+--llm-config .\results\agent_llm_eval_config.yaml
 ```
 
-因此评估阶段只加载已写好的 LLM 规则，不会触发 `call_llm()`。
+该配置中 `use_existing_rules: true`，因此评估阶段只加载已写好的 LLM 规则，不会触发 `call_llm()`。
 
 ## Final Answer 识别
 
@@ -381,7 +374,7 @@ python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --train-s
 运行 LLM 有标注方法：
 
 ```powershell
-python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --train-split train --eval-split test --method llm_labeled --llm-provider custom --llm-model my-model
+python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --train-split train --eval-split test --method llm_labeled --llm-config .\scripts\llm_config.yaml
 ```
 
 只生成 LLM prompt，不自动调用模型：

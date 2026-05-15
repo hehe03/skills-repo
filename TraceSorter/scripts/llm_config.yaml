@@ -1,0 +1,26 @@
+# LLM settings shared by run_experiments.py, run_ablation_study.py,
+# and run_agent_llm_workflow.py.
+#
+# For normal Python-driven LLM experiments, implement call_llm() in
+# scripts/llm_rule_prompt.py and fill provider/model below.
+# For Agent-driven workflows, set use_existing_rules: true in a copied
+# config file after the Agent has written rules/dynamic/llm/*.json.
+
+provider:
+model:
+temperature: 0.0
+use_existing_rules: false
+
+# Optional paths. Leave empty to use each script's default output path.
+output:
+prompt_output:
+report_output:
+
+# Prompt budget.
+max_samples: 30
+max_prompt_chars: 60000
+max_trace_chars: 2000
+max_dynamic_fields: 80
+
+# Extra provider-specific options passed to call_llm(..., extra_args=...).
+extra:

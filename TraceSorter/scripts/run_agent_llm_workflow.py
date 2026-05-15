@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from features import discover_default_final_answer_config, load_final_answer_config
+from llm_config import DEFAULT_LLM_CONFIG, apply_llm_config
 from llm_rule_prompt import build_prompt_from_records
 from run_experiments import (
     DatasetBundle,
@@ -44,7 +45,32 @@ def _prompt_records(method: str, bundle: DatasetBundle) -> List[Any]:
     return [] if scenario == "no_train" else bundle.train_records
 
 
-def _evaluation_command(args: argparse.Namespace, methods: List[str]) -> str:
+def _write_eval_llm_config(args: argparse.Namespace, output_dir: Path) -> Path:
+    config_path = output_dir / "agent_llm_eval_config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "provider:",
+                "model:",
+                "temperature: 0.0",
+                "use_existing_rules: true",
+                "output:",
+                "prompt_output:",
+                "report_output:",
+                f"max_samples: {args.llm_max_samples}",
+                f"max_prompt_chars: {args.llm_max_prompt_chars}",
+                f"max_trace_chars: {args.llm_max_trace_chars}",
+                f"max_dynamic_fields: {args.llm_max_dynamic_fields}",
+                "extra:",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def _evaluation_command(args: argparse.Namespace, methods: List[str], llm_config_path: Path) -> str:
     parts = [
         "python",
         r".\scripts\run_experiments.py",
@@ -61,7 +87,7 @@ def _evaluation_command(args: argparse.Namespace, methods: List[str]) -> str:
     if args.eval_split:
         parts.extend(["--eval-split", str(args.eval_split)])
     parts.extend(["--methods", ",".join(methods)])
-    parts.extend(["--llm-use-existing-rules"])
+    parts.extend(["--llm-config", str(llm_config_path)])
     parts.extend(["--output", str(args.report_output)])
     return " ".join(parts)
 
@@ -76,6 +102,7 @@ def prepare_agent_llm_tasks(args: argparse.Namespace) -> Path:
     output_dir = Path(args.output_dir)
     prompt_dir = output_dir / "agent_llm_prompts"
     prompt_dir.mkdir(parents=True, exist_ok=True)
+    eval_llm_config = _write_eval_llm_config(args, output_dir)
 
     final_answer_config = discover_default_final_answer_config(
         bundle.train_records or bundle.all_records,
@@ -114,8 +141,9 @@ def prepare_agent_llm_tasks(args: argparse.Namespace) -> Path:
         "metadata": str(args.metadata) if args.metadata else None,
         "train_source": bundle.train_source,
         "test_source": bundle.test_source,
+        "llm_config": str(eval_llm_config),
         "tasks": tasks,
-        "evaluation_command": _evaluation_command(args, methods),
+        "evaluation_command": _evaluation_command(args, methods, eval_llm_config),
         "important": [
             "Do not call scripts/llm_rule_prompt.py::call_llm().",
             "Generate rules with the current Agent's own LLM capability.",
@@ -136,6 +164,7 @@ def prepare_agent_llm_tasks(args: argparse.Namespace) -> Path:
         f"- Metadata: `{args.metadata}`" if args.metadata else "- Metadata: none",
         f"- Train source: `{bundle.train_source}`",
         f"- Test source: `{bundle.test_source}`",
+        f"- Eval LLM config: `{eval_llm_config}`",
         "",
         "## Tasks",
         "",
@@ -178,15 +207,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report-output", default="./results/llm_methods_compare.md", help="Final comparison report path.")
     parser.add_argument("--final-answer-config", help="Optional JSON config for final answer detection.")
     parser.add_argument("--final-answer-item", action="append", help="Business-specific final answer key:value pattern.")
-    parser.add_argument("--llm-max-samples", type=int, default=30)
-    parser.add_argument("--llm-max-prompt-chars", type=int, default=60000)
-    parser.add_argument("--llm-max-trace-chars", type=int, default=2000)
-    parser.add_argument("--llm-max-dynamic-fields", type=int, default=80)
+    parser.add_argument(
+        "--llm-config",
+        default=str(DEFAULT_LLM_CONFIG),
+        help="YAML config for LLM prompt budget. The evaluation command will use a generated config with use_existing_rules: true.",
+    )
     return parser
 
 
 def main(argv: List[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
+    args = apply_llm_config(build_parser().parse_args(argv))
     prepare_agent_llm_tasks(args)
 
 
