@@ -31,21 +31,31 @@ FINAL_ANSWER_COMPONENTS = {
 }
 DYNAMIC_FIELD_COMPONENTS = {
     "unlabeled_field_presence",
+    "unlabeled_field_stats",
     "labeled_field_presence",
     "labeled_field_value",
     "labeled_field_numeric",
+    "labeled_field_stats",
 }
 GENERATED_DYNAMIC_PREFIXES = ("unlabeled_", "labeled_", "llm_")
 NUMERIC_COMPONENTS = {
     "unlabeled_numeric_quantile",
+    "unlabeled_behavior_quantile",
+    "unlabeled_schema_profile",
+    "unlabeled_field_stats",
     "labeled_numeric_diff",
+    "labeled_behavior_diff",
+    "labeled_schema_profile",
     "labeled_field_numeric",
+    "labeled_field_stats",
 }
 FIELD_COMPONENTS = {
     "unlabeled_field_presence",
+    "unlabeled_field_stats",
     "labeled_field_presence",
     "labeled_field_value",
     "labeled_field_numeric",
+    "labeled_field_stats",
 }
 
 

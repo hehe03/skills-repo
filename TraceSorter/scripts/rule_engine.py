@@ -55,9 +55,29 @@ def condition_matches(features: Dict[str, Any], condition: Dict[str, Any]) -> bo
             actual = False
         elif feature.startswith("field_text:"):
             actual = ""
-        elif feature.startswith("field_count:"):
+        elif feature.startswith(
+            (
+                "field_count:",
+                "field_empty_count:",
+                "field_text_chars:",
+                "field_text_max_chars:",
+                "field_unique_value_count:",
+                "field_error_text_count:",
+                "field_number_count:",
+            )
+        ):
             actual = 0
-        elif feature.startswith("field_nonempty_ratio:"):
+        elif feature.startswith(
+            (
+                "field_nonempty_ratio:",
+                "field_unique_value_ratio:",
+                "field_number_ratio:",
+                "field_number_zero_ratio:",
+                "field_number_positive_ratio:",
+                "field_bool_true_ratio:",
+                "field_bool_false_ratio:",
+            )
+        ):
             actual = 0.0
 
     if op == "truthy":

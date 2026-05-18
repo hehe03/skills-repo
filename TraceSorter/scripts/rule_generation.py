@@ -19,7 +19,31 @@ NUMERIC_BAD_FEATURES = [
     "empty_result_count",
     "empty_result_ratio",
 ]
+BEHAVIOR_BAD_FEATURES = [
+    "behavior_action_switch_count",
+    "behavior_tool_like_action_count",
+    "behavior_repeated_result_count",
+    "behavior_repeated_result_ratio",
+    "behavior_max_consecutive_empty_result",
+    "behavior_error_step_count",
+    "behavior_error_step_ratio",
+    "behavior_retry_action_count",
+    "behavior_terminal_error",
+]
+SCHEMA_PROFILE_BAD_FEATURES = [
+    "schema_leaf_field_count",
+    "schema_repeated_leaf_path_count",
+    "schema_array_leaf_path_count",
+    "schema_object_count",
+    "schema_list_count",
+    "schema_empty_object_count",
+    "schema_empty_list_count",
+    "schema_empty_scalar_count",
+    "schema_empty_scalar_ratio",
+    "schema_max_depth",
+]
 MAX_DYNAMIC_FIELD_RULES = 30
+MAX_DYNAMIC_FIELD_STAT_RULES = 20
 MAX_DYNAMIC_FIELD_VALUE_CHARS = 80
 
 
@@ -55,6 +79,10 @@ def _safe_rule_id(text: str, max_chars: int = 80) -> str:
 
 
 def _fixed_feature_group(feature: str) -> str:
+    if feature.startswith("behavior_"):
+        return "behavior"
+    if feature.startswith("schema_"):
+        return "schema_profile"
     if "result" in feature:
         return "result_quality"
     if "error" in feature:
@@ -62,6 +90,14 @@ def _fixed_feature_group(feature: str) -> str:
     if "repeated" in feature or "consecutive" in feature:
         return "loop_repetition"
     return "structure"
+
+
+def _numeric_feature_specs() -> List[tuple[str, str, str]]:
+    specs: List[tuple[str, str, str]] = []
+    specs.extend((feature, "unlabeled_numeric_quantile", "labeled_numeric_diff") for feature in NUMERIC_BAD_FEATURES)
+    specs.extend((feature, "unlabeled_behavior_quantile", "labeled_behavior_diff") for feature in BEHAVIOR_BAD_FEATURES)
+    specs.extend((feature, "unlabeled_schema_profile", "labeled_schema_profile") for feature in SCHEMA_PROFILE_BAD_FEATURES)
+    return specs
 
 
 def _dynamic_paths(rows: List[Dict[str, Any]]) -> List[str]:
@@ -115,6 +151,124 @@ def _mean_optional(values: List[float | None]) -> float | None:
     if not present:
         return None
     return statistics.fmean(present)
+
+
+def _feature_number(row: Dict[str, Any], feature: str) -> float | None:
+    value = row.get(feature)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _numeric_feature_values(rows: List[Dict[str, Any]], feature: str) -> List[float]:
+    values: List[float] = []
+    for row in rows:
+        value = _feature_number(row, feature)
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def _stat_threshold(feature: str, value: float) -> float:
+    if feature.endswith("_ratio"):
+        return max(0.10, round(value, 2))
+    return max(1.0, round(value, 2))
+
+
+FIELD_STAT_FEATURES = [
+    "field_count",
+    "field_empty_count",
+    "field_text_chars",
+    "field_text_max_chars",
+    "field_unique_value_count",
+    "field_error_text_count",
+    "field_number_range",
+    "field_number_zero_ratio",
+    "field_number_positive_ratio",
+    "field_bool_true_ratio",
+    "field_bool_false_ratio",
+]
+
+
+def _field_stat_feature(prefix: str, path: str) -> str:
+    return f"{prefix}:{path}"
+
+
+def _dynamic_unlabeled_field_stat_rules(feature_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if len(feature_rows) < 3:
+        return []
+    rules: List[Dict[str, Any]] = []
+    for path in _dynamic_paths(feature_rows):
+        if len(rules) >= MAX_DYNAMIC_FIELD_STAT_RULES:
+            break
+        if _presence_rate(feature_rows, path) < 0.50:
+            continue
+        field_id = _safe_rule_id(path)
+        for prefix in FIELD_STAT_FEATURES:
+            if len(rules) >= MAX_DYNAMIC_FIELD_STAT_RULES:
+                break
+            feature = _field_stat_feature(prefix, path)
+            values = _numeric_feature_values(feature_rows, feature)
+            if len(values) < 3:
+                continue
+            threshold = _stat_threshold(feature, _percentile(values, 0.90))
+            if threshold <= 0:
+                continue
+            if prefix in {"field_text_chars", "field_text_max_chars"} and threshold < 200:
+                continue
+            if prefix == "field_count" and threshold < 3:
+                continue
+            if prefix == "field_unique_value_count" and threshold < 4:
+                continue
+            if prefix.endswith("_ratio") and threshold < 0.50:
+                continue
+            rules.append(
+                {
+                    "id": f"unlabeled_high_{prefix}_{field_id}",
+                    "layer": "unlabeled",
+                    "component": "unlabeled_field_stats",
+                    "feature_group": "dynamic_fields",
+                    "source_method": "non_llm_unlabeled",
+                    "label": "badcase",
+                    "weight": 0.18,
+                    "description": f"Field statistic `{prefix}` for `{path}` is high relative to the unlabeled train cohort.",
+                    "all": [
+                        {"feature": f"field_exists:{path}", "op": "==", "value": True},
+                        {"feature": feature, "op": ">=", "value": threshold},
+                    ],
+                }
+            )
+
+        count_values = _numeric_feature_values(feature_rows, _field_stat_feature("field_count", path))
+        ratio_values = _numeric_feature_values(feature_rows, _field_stat_feature("field_unique_value_ratio", path))
+        if len(rules) >= MAX_DYNAMIC_FIELD_STAT_RULES or len(count_values) < 3 or len(ratio_values) < 3:
+            continue
+        if statistics.fmean(count_values) < 3:
+            continue
+        threshold = min(0.75, round(_percentile(ratio_values, 0.10), 2))
+        if threshold <= 0 or threshold > 0.75:
+            continue
+        rules.append(
+            {
+                "id": f"unlabeled_low_unique_ratio_{field_id}",
+                "layer": "unlabeled",
+                "component": "unlabeled_field_stats",
+                "feature_group": "dynamic_fields",
+                "source_method": "non_llm_unlabeled",
+                "label": "badcase",
+                "weight": 0.18,
+                "description": f"Field `{path}` has unusually low value diversity relative to the unlabeled train cohort.",
+                "all": [
+                    {"feature": f"field_exists:{path}", "op": "==", "value": True},
+                    {"feature": f"field_count:{path}", "op": ">=", "value": 3},
+                    {"feature": f"field_unique_value_ratio:{path}", "op": "<=", "value": threshold},
+                ],
+            }
+        )
+    return rules
 
 
 def _dynamic_unlabeled_field_rules(feature_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -296,6 +450,65 @@ def _dynamic_labeled_field_rules(good_rows: List[Dict[str, Any]], bad_rows: List
     return rules[:MAX_DYNAMIC_FIELD_RULES]
 
 
+def _dynamic_labeled_field_stat_rules(good_rows: List[Dict[str, Any]], bad_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rules: List[Dict[str, Any]] = []
+    paths = sorted(set(_dynamic_paths(good_rows)) | set(_dynamic_paths(bad_rows)))
+    for path in paths:
+        if len(rules) >= MAX_DYNAMIC_FIELD_STAT_RULES:
+            break
+        if max(_presence_rate(good_rows, path), _presence_rate(bad_rows, path)) < 0.40:
+            continue
+        field_id = _safe_rule_id(path)
+        for prefix in FIELD_STAT_FEATURES + ["field_unique_value_ratio"]:
+            if len(rules) >= MAX_DYNAMIC_FIELD_STAT_RULES:
+                break
+            feature = _field_stat_feature(prefix, path)
+            good_values = _numeric_feature_values(good_rows, feature)
+            bad_values = _numeric_feature_values(bad_rows, feature)
+            if len(good_values) < 2 or len(bad_values) < 2:
+                continue
+            good_mean = statistics.fmean(good_values)
+            bad_mean = statistics.fmean(bad_values)
+            gap = abs(bad_mean - good_mean)
+            if feature.endswith("_ratio"):
+                if gap < 0.25:
+                    continue
+                threshold = round((good_mean + bad_mean) / 2.0, 2)
+            else:
+                if gap < max(1.0, abs(good_mean) * 0.25, abs(bad_mean) * 0.25):
+                    continue
+                threshold = round((good_mean + bad_mean) / 2.0, 2)
+            if bad_mean > good_mean:
+                rule_id = f"labeled_bad_high_{prefix}_{field_id}"
+                label = "badcase"
+                op = ">="
+                weight = 0.24
+                description = f"Field statistic `{prefix}` for `{path}` is higher in labeled badcase train traces."
+            else:
+                rule_id = f"labeled_good_high_{prefix}_{field_id}"
+                label = "goodcase"
+                op = ">="
+                weight = 0.20
+                description = f"Field statistic `{prefix}` for `{path}` is higher in labeled goodcase train traces."
+            rules.append(
+                {
+                    "id": rule_id,
+                    "layer": "labeled",
+                    "component": "labeled_field_stats",
+                    "feature_group": "dynamic_fields",
+                    "source_method": "non_llm_labeled",
+                    "label": label,
+                    "weight": weight,
+                    "description": description,
+                    "all": [
+                        {"feature": f"field_exists:{path}", "op": "==", "value": True},
+                        {"feature": feature, "op": op, "value": threshold},
+                    ],
+                }
+            )
+    return rules
+
+
 def generate_unlabeled_rules(
     records: Iterable[TraceRecord],
     output_path: str | Path,
@@ -303,7 +516,7 @@ def generate_unlabeled_rules(
 ) -> List[Dict[str, Any]]:
     feature_rows = [extract_features(record, final_answer_config) for record in records]
     rules: List[Dict[str, Any]] = []
-    for feature in NUMERIC_BAD_FEATURES:
+    for feature, unlabeled_component, _ in _numeric_feature_specs():
         values = [float(row.get(feature, 0.0)) for row in feature_rows]
         threshold = _percentile(values, 0.90)
         if feature.endswith("_ratio"):
@@ -316,7 +529,7 @@ def generate_unlabeled_rules(
             {
                 "id": f"unlabeled_high_{feature}",
                 "layer": "unlabeled",
-                "component": "unlabeled_numeric_quantile",
+                "component": unlabeled_component,
                 "feature_group": _fixed_feature_group(feature),
                 "source_method": "non_llm_unlabeled",
                 "label": "badcase",
@@ -344,6 +557,7 @@ def generate_unlabeled_rules(
             }
         )
     rules.extend(_dynamic_unlabeled_field_rules(feature_rows))
+    rules.extend(_dynamic_unlabeled_field_stat_rules(feature_rows))
     _write_rules(output_path, rules)
     return rules
 
@@ -367,7 +581,7 @@ def generate_labeled_rules(
         return []
 
     rules: List[Dict[str, Any]] = []
-    for feature in NUMERIC_BAD_FEATURES:
+    for feature, _, labeled_component in _numeric_feature_specs():
         bad_mean = _mean(bad_rows, feature)
         good_mean = _mean(good_rows, feature)
         if bad_mean <= good_mean:
@@ -383,7 +597,7 @@ def generate_labeled_rules(
             {
                 "id": f"labeled_bad_high_{feature}",
                 "layer": "labeled",
-                "component": "labeled_numeric_diff",
+                "component": labeled_component,
                 "feature_group": _fixed_feature_group(feature),
                 "source_method": "non_llm_labeled",
                 "label": "badcase",
@@ -430,5 +644,6 @@ def generate_labeled_rules(
         )
 
     rules.extend(_dynamic_labeled_field_rules(good_rows, bad_rows))
+    rules.extend(_dynamic_labeled_field_stat_rules(good_rows, bad_rows))
     _write_rules(output_path, rules)
     return rules

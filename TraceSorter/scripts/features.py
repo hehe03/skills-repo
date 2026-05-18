@@ -278,10 +278,18 @@ def _dynamic_field_features(trace: Any) -> Dict[str, Any]:
     for path, values in values_by_path.items():
         texts = [_stringify(value, limit=500).strip() for value in values]
         nonempty_texts = [text for text in texts if text]
+        unique_texts = set(texts)
+        text_lengths = [len(text) for text in texts]
         features[f"field_exists:{path}"] = True
         features[f"field_count:{path}"] = len(values)
         features[f"field_text:{path}"] = "\n".join(nonempty_texts)[:MAX_DYNAMIC_FIELD_TEXT]
+        features[f"field_empty_count:{path}"] = len(values) - len(nonempty_texts)
+        features[f"field_text_chars:{path}"] = sum(text_lengths)
+        features[f"field_text_max_chars:{path}"] = max(text_lengths) if text_lengths else 0
+        features[f"field_unique_value_count:{path}"] = len(unique_texts)
+        features[f"field_unique_value_ratio:{path}"] = round(len(unique_texts) / len(values), 4) if values else 0.0
         features[f"field_nonempty_ratio:{path}"] = round(len(nonempty_texts) / len(values), 4) if values else 0.0
+        features[f"field_error_text_count:{path}"] = sum(1 for text in texts if ERROR_RE.search(text))
 
         numbers: List[float] = []
         for value in values:
@@ -294,18 +302,84 @@ def _dynamic_field_features(trace: Any) -> Dict[str, Any]:
                     numbers.append(float(str(value)))
                 except (TypeError, ValueError):
                     pass
+        features[f"field_number_count:{path}"] = len(numbers)
+        features[f"field_number_ratio:{path}"] = round(len(numbers) / len(values), 4) if values else 0.0
         if numbers and len(numbers) == len(values):
             features[f"field_number_min:{path}"] = min(numbers)
             features[f"field_number_max:{path}"] = max(numbers)
             features[f"field_number_mean:{path}"] = round(sum(numbers) / len(numbers), 4)
+            features[f"field_number_range:{path}"] = round(max(numbers) - min(numbers), 4)
+            features[f"field_number_zero_ratio:{path}"] = round(sum(1 for value in numbers if value == 0) / len(numbers), 4)
+            features[f"field_number_positive_ratio:{path}"] = round(
+                sum(1 for value in numbers if value > 0) / len(numbers),
+                4,
+            )
             if len(numbers) == 1:
                 features[f"field_number:{path}"] = numbers[0]
 
         bools = [value for value in values if isinstance(value, bool)]
         if bools and len(bools) == len(values):
             features[f"field_bool_true_ratio:{path}"] = round(sum(1 for value in bools if value) / len(bools), 4)
+            features[f"field_bool_false_ratio:{path}"] = round(sum(1 for value in bools if not value) / len(bools), 4)
 
     return features
+
+
+def _schema_profile_features(trace: Any) -> Dict[str, Any]:
+    counters = Counter()
+    max_depth = 0
+
+    def visit(value: Any, depth: int) -> None:
+        nonlocal max_depth
+        max_depth = max(max_depth, depth)
+        if isinstance(value, dict):
+            counters["object_count"] += 1
+            if not value:
+                counters["empty_object_count"] += 1
+            for child in value.values():
+                visit(child, depth + 1)
+            return
+        if isinstance(value, list):
+            counters["list_count"] += 1
+            if not value:
+                counters["empty_list_count"] += 1
+            for child in value:
+                visit(child, depth + 1)
+            return
+        counters["scalar_count"] += 1
+        if value in (None, ""):
+            counters["empty_scalar_count"] += 1
+        elif isinstance(value, str):
+            counters["string_scalar_count"] += 1
+        elif isinstance(value, bool):
+            counters["bool_scalar_count"] += 1
+        elif isinstance(value, (int, float)):
+            counters["number_scalar_count"] += 1
+
+    visit(trace, 0)
+    leaf_paths = [path for path, _ in _flatten_leaf_fields(trace)]
+    unique_leaf_paths = set(leaf_paths)
+    top_level_keys = list(trace) if isinstance(trace, dict) else []
+    scalar_count = counters["scalar_count"]
+
+    return {
+        "schema_top_level_key_count": len(top_level_keys),
+        "schema_leaf_field_count": len(leaf_paths),
+        "schema_unique_leaf_path_count": len(unique_leaf_paths),
+        "schema_repeated_leaf_path_count": max(0, len(leaf_paths) - len(unique_leaf_paths)),
+        "schema_array_leaf_path_count": sum(1 for path in unique_leaf_paths if "[]" in path),
+        "schema_object_count": counters["object_count"],
+        "schema_list_count": counters["list_count"],
+        "schema_empty_object_count": counters["empty_object_count"],
+        "schema_empty_list_count": counters["empty_list_count"],
+        "schema_scalar_count": scalar_count,
+        "schema_empty_scalar_count": counters["empty_scalar_count"],
+        "schema_string_scalar_ratio": round(counters["string_scalar_count"] / scalar_count, 4) if scalar_count else 0.0,
+        "schema_number_scalar_ratio": round(counters["number_scalar_count"] / scalar_count, 4) if scalar_count else 0.0,
+        "schema_bool_scalar_ratio": round(counters["bool_scalar_count"] / scalar_count, 4) if scalar_count else 0.0,
+        "schema_empty_scalar_ratio": round(counters["empty_scalar_count"] / scalar_count, 4) if scalar_count else 0.0,
+        "schema_max_depth": max_depth,
+    }
 
 
 def _candidate_steps(trace: Any) -> List[Dict[str, Any]]:
@@ -469,6 +543,63 @@ def _max_consecutive(values: List[str]) -> int:
     return best
 
 
+def _max_consecutive_empty(values: List[str]) -> int:
+    best = 0
+    current = 0
+    for value in values:
+        if value:
+            current = 0
+            continue
+        current += 1
+        best = max(best, current)
+    return best
+
+
+def _behavior_features(
+    steps: List[Dict[str, Any]],
+    actions: List[str],
+    result_texts: List[str],
+) -> Dict[str, Any]:
+    step_count = len(steps)
+    action_switch_count = sum(1 for index in range(1, len(actions)) if actions[index] != actions[index - 1])
+    nonempty_result_texts = [text for text in result_texts if text]
+    repeated_result_count = len(nonempty_result_texts) - len(set(nonempty_result_texts))
+    error_step_count = 0
+    for step, result_text in zip(steps, result_texts):
+        if ERROR_RE.search(result_text) or ERROR_RE.search(_stringify(step)):
+            error_step_count += 1
+    retry_action_count = sum(
+        1
+        for action in actions
+        if re.search(r"\b(retry|rerun|redo|again|fix|repair|recover)\b", action, re.IGNORECASE)
+    )
+    tool_like_action_count = sum(
+        1
+        for action in actions
+        if action not in {"", "unknown", "user", "assistant", "system", "developer", "tool"}
+    )
+    assistant_turn_count = sum(1 for action in actions if action == "assistant")
+    user_turn_count = sum(1 for action in actions if action == "user")
+
+    return {
+        "behavior_action_switch_count": action_switch_count,
+        "behavior_action_switch_ratio": round(action_switch_count / max(1, step_count - 1), 4) if step_count else 0.0,
+        "behavior_tool_like_action_count": tool_like_action_count,
+        "behavior_tool_like_action_ratio": round(tool_like_action_count / step_count, 4) if step_count else 0.0,
+        "behavior_assistant_turn_count": assistant_turn_count,
+        "behavior_user_turn_count": user_turn_count,
+        "behavior_repeated_result_count": repeated_result_count,
+        "behavior_repeated_result_ratio": round(repeated_result_count / len(nonempty_result_texts), 4)
+        if nonempty_result_texts
+        else 0.0,
+        "behavior_max_consecutive_empty_result": _max_consecutive_empty(result_texts),
+        "behavior_error_step_count": error_step_count,
+        "behavior_error_step_ratio": round(error_step_count / step_count, 4) if step_count else 0.0,
+        "behavior_retry_action_count": retry_action_count,
+        "behavior_terminal_error": bool(result_texts and ERROR_RE.search(result_texts[-1])),
+    }
+
+
 def extract_features(
     record: TraceRecord,
     final_answer_config: FinalAnswerConfig | None = None,
@@ -521,5 +652,7 @@ def extract_features(
         "source": record.source or "",
         "split": record.split or "",
     }
+    features.update(_behavior_features(steps, actions, result_texts))
+    features.update(_schema_profile_features(trace))
     features.update(_dynamic_field_features(trace))
     return features
