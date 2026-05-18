@@ -94,6 +94,11 @@ recall 相近时，f1 越高越好
 - `without_generated_dynamic`：禁用训练或 LLM 生成的动态规则。
 - `numeric_only`：只保留数值阈值类规则。
 - `field_only`：只保留动态字段类规则。
+- `distance_aux_only`：只使用距离辅助分类器。
+- `cluster_aux_only`：只使用聚类辅助分类器。
+- `aux_only`：只使用距离和聚类辅助分类器。
+- `rules_plus_aux`：完整规则集叠加辅助分类器，并使用 precision-first 的 ensemble policy。
+- `field_only_plus_aux`：字段类规则叠加辅助分类器，用于观察辅助分类器是否能在稳健字段规则上补 recall。
 
 回答的问题：
 
@@ -101,6 +106,8 @@ recall 相近时，f1 越高越好
 - 动态字段规则是否带来泛化风险。
 - final-answer 规则是否过强。
 - 字段规则和数值规则哪个更可靠。
+- 辅助分类器是独立有效，还是只能作为规则分类器的弱补充。
+- ensemble policy 是否能在不显著增加 FP 的前提下补充 badcase recall。
 
 ### 第五阶段：推荐候选
 

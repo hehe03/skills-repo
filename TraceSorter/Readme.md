@@ -114,6 +114,9 @@ labeled_field_presence
 labeled_field_value
 labeled_field_numeric
 labeled_field_stats
+distance_aux
+cluster_aux
+ensemble_policy
 llm_rules
 ```
 
@@ -204,6 +207,32 @@ case_002.json,badcase,eval_a,test
 规则生成方法可以直接使用这些动态字段特征。因此，如果训练数据中发现某个业务字段、字段取值、字段缺失或数值大小与 good/bad 有关系，生成的规则会立刻写入动态规则文件，并在同一次测试阶段生效。
 
 行为特征、schema profile 特征和更细的动态字段统计属于实验性组件。它们会以独立 component 写入规则，例如 `labeled_behavior_diff`、`labeled_schema_profile`、`labeled_field_stats`。默认实验会加载这些规则，但可以通过 `run_ablation_study.py` 观察它们的单独贡献，再决定是否采用。
+
+## 辅助分类组件
+
+第三阶段新增辅助分类层。它不替代规则引擎，而是在规则分类器之外，用训练样本的数值特征向量生成辅助证据：
+
+| 组件 | 作用 | 适用训练场景 |
+|---|---|---|
+| `distance_aux` | 计算测试样本到训练集中心或 good/bad 类中心的标准化距离 | 无标注、有标注 |
+| `cluster_aux` | 用轻量聚类或带标签原型判断样本靠近哪个簇 | 无标注、有标注 |
+| `ensemble_policy` | 决定辅助证据如何并入规则分数和最终标签 | 测试阶段 |
+
+普通实验默认不启用辅助分类器。显式启用示例：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --train-split train --eval-split test --method non_llm_labeled --aux-components all --ensemble-policy precision_guard
+```
+
+`--aux-components` 支持 `none`、`distance_aux`、`cluster_aux`、`all`。`--ensemble-policy` 支持：
+
+| policy | 含义 |
+|---|---|
+| `rules_only` | 默认值，只用规则结果，忽略辅助证据 |
+| `aux_additive` | 把辅助证据作为 pseudo-rule 权重加到 good/bad score |
+| `precision_guard` | precision 优先策略，只在辅助证据足够强时改变规则结果 |
+
+`run_ablation_study.py` 会自动加入辅助分类相关变体，例如 `distance_aux_only`、`cluster_aux_only`、`rules_plus_aux`、`field_only_plus_aux`，用于观察辅助分类器是否真的提高 badcase precision 或 recall。
 
 LLM 方法还可以输出 `proposed_features`。这类是真正“尚未实现的新计算特征”建议，只会进入报告，不会在当前运行中立即生效；如果 LLM 使用的是 `field_*:<path>` 这类动态字段特征，则会立即生效。
 

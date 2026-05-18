@@ -171,3 +171,19 @@ bad_score >= 0.60 且 bad_score >= good_score -> badcase
 ```
 
 报告会输出命中规则、组件贡献、final-answer policy、指标和逐条预测结果。
+
+## 辅助分类组件
+
+第三阶段支持 `distance_aux`、`cluster_aux` 和 `ensemble_policy`。这些组件不是新的规则生成方法，而是分类器层面的实验性辅助证据：
+
+- `distance_aux`：基于训练样本的标准化数值特征向量，计算测试样本到训练集中心或 good/bad 类中心的距离。
+- `cluster_aux`：基于训练样本的轻量聚类或带标签原型，判断测试样本靠近哪个簇。
+- `ensemble_policy`：控制辅助证据是否以及如何改变规则分类器结果。
+
+普通实验默认 `rules_only`，不会启用辅助分类器。需要显式指定：
+
+```powershell
+python .\scripts\run_experiments.py .\traces --metadata .\metadata.csv --train-split train --eval-split test --method non_llm_labeled --aux-components all --ensemble-policy precision_guard
+```
+
+`run_ablation_study.py` 会自动加入 `distance_aux_only`、`cluster_aux_only`、`aux_only`、`rules_plus_aux`、`field_only_plus_aux` 等辅助分类变体，用于判断它们是否值得采纳。

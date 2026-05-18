@@ -13,6 +13,7 @@ from llm_config import apply_llm_config, DEFAULT_LLM_CONFIG
 from metrics import confusion_and_scores
 from run_experiments import (
     DatasetBundle,
+    aux_model_for_method,
     discover_default_final_answer_config,
     load_final_answer_config,
     load_rules,
@@ -67,6 +68,8 @@ class StudyVariant:
     rules: List[Dict[str, Any]]
     enabled_components: tuple[str, ...] = ()
     disabled_components: tuple[str, ...] = ()
+    aux_components: tuple[str, ...] = ()
+    ensemble_policy: str = "rules_only"
 
 
 @dataclass
@@ -185,11 +188,48 @@ def build_study_variants(method: str, raw_rules: List[Dict[str, Any]]) -> List[S
             )
 
     variants.extend(_dedupe_variants(targeted))
+
+    if not method.endswith("_no_train"):
+        aux_specs = [
+            ("distance_aux_only", "auxiliary", [], ("distance_aux",), "aux_additive"),
+            ("cluster_aux_only", "auxiliary", [], ("cluster_aux",), "aux_additive"),
+            ("aux_only", "auxiliary", [], ("distance_aux", "cluster_aux"), "aux_additive"),
+            ("rules_plus_distance_aux", "auxiliary", filter_rules(raw_rules), ("distance_aux",), "precision_guard"),
+            ("rules_plus_cluster_aux", "auxiliary", filter_rules(raw_rules), ("cluster_aux",), "precision_guard"),
+            ("rules_plus_aux", "auxiliary", filter_rules(raw_rules), ("distance_aux", "cluster_aux"), "precision_guard"),
+        ]
+        field_rules = _only_components(raw_rules, FIELD_COMPONENTS)
+        if field_rules:
+            aux_specs.append(
+                (
+                    "field_only_plus_aux",
+                    "auxiliary",
+                    field_rules,
+                    ("distance_aux", "cluster_aux"),
+                    "precision_guard",
+                )
+            )
+        for name, category, rules, aux_components, policy in aux_specs:
+            variants.append(
+                StudyVariant(
+                    method=method,
+                    name=name,
+                    category=category,
+                    rules=rules,
+                    aux_components=aux_components,
+                    ensemble_policy=policy,
+                )
+            )
     return _dedupe_variants(variants)
 
 
 def _variant_signature(variant: StudyVariant) -> tuple[str, tuple[str, ...]]:
-    return variant.name, tuple(str(rule.get("id", "")) for rule in variant.rules)
+    return (
+        variant.name,
+        tuple(str(rule.get("id", "")) for rule in variant.rules)
+        + tuple(f"aux:{item}" for item in variant.aux_components)
+        + (f"policy:{variant.ensemble_policy}",),
+    )
 
 
 def _dedupe_variants(variants: Sequence[StudyVariant]) -> List[StudyVariant]:
@@ -226,10 +266,19 @@ def evaluate_variant(
     records: List[Any],
     final_answer_config: Any,
     args: argparse.Namespace,
+    aux_model: Dict[str, Any] | None = None,
     baseline_rows: List[Dict[str, Any]] | None = None,
     baseline_metrics: Dict[str, Any] | None = None,
 ) -> StudyResult:
-    rows = predict_with_method(records, variant.rules, final_answer_config, args)
+    rows = predict_with_method(
+        records,
+        variant.rules,
+        final_answer_config,
+        args,
+        aux_model=aux_model,
+        aux_components=variant.aux_components,
+        ensemble_policy=variant.ensemble_policy,
+    )
     metrics = confusion_and_scores(rows)
     baseline_rows = baseline_rows or rows
     baseline_metrics = baseline_metrics or metrics
@@ -396,14 +445,15 @@ def write_summary_report(
 
     lines.extend(["## 全量实验结果", ""])
     lines.append(
-        "| method | variant | category | enabled components | disabled components | rules | precision | recall | f1 | accuracy | tp | fp | tn | fn | fixed | broken |"
+        "| method | variant | category | enabled components | disabled components | aux components | ensemble policy | rules | precision | recall | f1 | accuracy | tp | fp | tn | fn | fixed | broken |"
     )
-    lines.append("|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for result in sorted(results, key=lambda item: (item.variant.method, item.variant.category, item.variant.name)):
         metrics = result.metrics
         lines.append(
             f"| `{result.variant.method}` | `{result.variant.name}` | {result.variant.category} | "
             f"{_format_components(result.variant.enabled_components)} | {_format_components(result.variant.disabled_components)} | "
+            f"{_format_components(result.variant.aux_components)} | `{result.variant.ensemble_policy}` | "
             f"{len(result.variant.rules)} | {metrics['precision']} | {metrics['recall']} | {metrics['f1']} | "
             f"{metrics['accuracy']} | {metrics['tp']} | {metrics['fp']} | {metrics['tn']} | {metrics['fn']} | "
             f"{len(result.fixed_cases)} | {len(result.broken_cases)} |"
@@ -506,12 +556,14 @@ def run_study(args: argparse.Namespace) -> Path:
         train_method(method, bundle, final_answer_config, args)
         raw_rules = load_rules(rule_paths_for_method(method))
         variants = build_study_variants(method, raw_rules)
+        aux_model = aux_model_for_method(method, bundle, final_answer_config, ("distance_aux", "cluster_aux"))
         baseline_variant = variants[0]
         baseline = evaluate_variant(
             baseline_variant,
             records=bundle.test_records,
             final_answer_config=final_answer_config,
             args=args,
+            aux_model=aux_model,
         )
         baseline_by_method[method] = baseline
         all_results.append(baseline)
@@ -522,6 +574,7 @@ def run_study(args: argparse.Namespace) -> Path:
                     records=bundle.test_records,
                     final_answer_config=final_answer_config,
                     args=args,
+                    aux_model=aux_model,
                     baseline_rows=baseline.results,
                     baseline_metrics=baseline.metrics,
                 )

@@ -4,8 +4,14 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence
 
+from aux_classifiers import (
+    apply_ensemble_policy,
+    aux_evidence_for_features,
+    build_aux_model,
+    parse_aux_components,
+)
 from experiment_components.rule_filters import annotate_rules
 from features import discover_default_final_answer_config, extract_features, load_final_answer_config
 from llm_rule_prompt import build_prompt_from_records, call_llm, parse_llm_response, write_llm_rule_report
@@ -319,13 +325,27 @@ def predict_with_method(
     rules: List[Dict[str, Any]],
     final_answer_config: Any,
     args: argparse.Namespace,
+    *,
+    aux_model: Dict[str, Any] | None = None,
+    aux_components: Sequence[str] | None = None,
+    ensemble_policy: str | None = None,
 ) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
+    aux_components = aux_components if aux_components is not None else parse_aux_components(getattr(args, "aux_components", ""))
+    ensemble_policy = ensemble_policy or getattr(args, "ensemble_policy", "rules_only")
     for record in records:
         features = extract_features(record, final_answer_config)
         prediction = classify_features(
             features,
             rules,
+            bad_threshold=args.bad_threshold,
+            good_threshold=args.good_threshold,
+        )
+        aux_hits = aux_evidence_for_features(features, aux_model, aux_components)
+        prediction = apply_ensemble_policy(
+            prediction,
+            aux_hits,
+            policy=ensemble_policy,
             bad_threshold=args.bad_threshold,
             good_threshold=args.good_threshold,
         )
@@ -341,10 +361,29 @@ def predict_with_method(
                 "final_answer_evidence_strength": features["final_answer_evidence_strength"],
                 "final_answer_evidence_source": features["final_answer_evidence_source"],
                 "final_answer_adopted_fields": features["final_answer_adopted_fields"],
+                "aux_components": prediction.get("aux_components", ""),
+                "ensemble_policy": prediction.get("ensemble_policy", ensemble_policy),
                 **prediction,
             }
         )
     return results
+
+
+def aux_model_for_method(
+    method: str,
+    bundle: DatasetBundle,
+    final_answer_config: Any,
+    aux_components: Sequence[str] | None,
+) -> Dict[str, Any] | None:
+    components = parse_aux_components(aux_components)
+    if not components:
+        return None
+    scenario = method_training_scenario(method)
+    return build_aux_model(
+        bundle.train_records,
+        final_answer_config,
+        training_scenario=scenario,
+    )
 
 
 def _method_notes(
@@ -372,9 +411,24 @@ def run_single_method(args: argparse.Namespace, method: str, bundle: DatasetBund
     )
     generated_rule_files = train_method(method, bundle, final_answer_config, args)
     rules = annotate_rules(load_rules(rule_paths_for_method(method)))
-    results = predict_with_method(bundle.test_records, rules, final_answer_config, args)
+    aux_components = parse_aux_components(args.aux_components)
+    aux_model = aux_model_for_method(method, bundle, final_answer_config, aux_components)
+    results = predict_with_method(
+        bundle.test_records,
+        rules,
+        final_answer_config,
+        args,
+        aux_model=aux_model,
+        aux_components=aux_components,
+        ensemble_policy=args.ensemble_policy,
+    )
 
     output_path = Path(args.output) if args.output else default_report_path(args.output_dir, method)
+    notes = _method_notes(method, bundle, generated_rule_files)
+    if aux_components:
+        notes.append(f"Aux components: `{','.join(aux_components)}`")
+        notes.append(f"Ensemble policy: `{args.ensemble_policy}`")
+        notes.append(f"Aux model trained: `{bool(aux_model)}`")
     return write_report(
         output_path,
         method=method,
@@ -383,7 +437,7 @@ def run_single_method(args: argparse.Namespace, method: str, bundle: DatasetBund
         rules=rules,
         results=results,
         max_rows=args.max_rows,
-        notes=_method_notes(method, bundle, generated_rule_files),
+        notes=notes,
     )
 
 
@@ -400,7 +454,17 @@ def run_methods_comparison(args: argparse.Namespace, methods: List[str], bundle:
         generated_by_method[method] = train_method(method, bundle, final_answer_config, args)
         rules = annotate_rules(load_rules(rule_paths_for_method(method)))
         rules_by_method[method] = rules
-        results_by_method[method] = predict_with_method(bundle.test_records, rules, final_answer_config, args)
+        aux_components = parse_aux_components(args.aux_components)
+        aux_model = aux_model_for_method(method, bundle, final_answer_config, aux_components)
+        results_by_method[method] = predict_with_method(
+            bundle.test_records,
+            rules,
+            final_answer_config,
+            args,
+            aux_model=aux_model,
+            aux_components=aux_components,
+            ensemble_policy=args.ensemble_policy,
+        )
 
     output_path = Path(args.output) if args.output else default_report_path(args.output_dir, "methods_comparison")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -414,6 +478,8 @@ def run_methods_comparison(args: argparse.Namespace, methods: List[str], bundle:
         f"- Test source: `{bundle.test_source}`",
         f"- Test samples: {len(bundle.test_records)}",
         f"- Methods: {', '.join(methods)}",
+        f"- Aux components: `{args.aux_components or 'none'}`",
+        f"- Ensemble policy: `{args.ensemble_policy}`",
     ]
     lines.extend(
         [
@@ -536,6 +602,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--bad-threshold", type=float, default=0.60)
     parser.add_argument("--good-threshold", type=float, default=0.50)
+    parser.add_argument(
+        "--aux-components",
+        default="",
+        help="Optional auxiliary classifiers: none, distance_aux, cluster_aux, or all.",
+    )
+    parser.add_argument(
+        "--ensemble-policy",
+        choices=["rules_only", "aux_additive", "precision_guard"],
+        default="rules_only",
+        help="How to combine auxiliary classifier evidence with rule scores.",
+    )
     parser.add_argument("--output-dir", default="./results", help="Directory used for auto-named Markdown reports.")
     parser.add_argument("--output", help="Explicit Markdown output file path. Overrides --output-dir auto naming.")
     parser.add_argument("--max-rows", type=int, default=200)
