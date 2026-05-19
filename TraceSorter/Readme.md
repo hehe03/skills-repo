@@ -367,6 +367,68 @@ Agent 执行步骤：
 
 该配置中 `use_existing_rules: true`，因此评估阶段只加载已写好的 LLM 规则，不会触发 `call_llm()`。
 
+## 独立 LLM-as-Judge 方法
+
+除“静态规则 / 动态规则 / LLM 生成规则”之外，项目还保留了两类独立 LLM-as-Judge 方法。它们放在 `scripts/llm_judge_methods/` 下，复用 trace/metadata 读取逻辑，但**不写入 `scripts/rules/`，也不通过 `rule_engine.py` 执行**。这样可以把“规则分类器”和“LLM judge 分类器”作为不同思想的方法族隔离比较。
+
+### AgentEvals 默认 judge
+
+该方法直接调用 LangChain AgentEvals 的 `create_trajectory_llm_as_judge()`：
+
+- 不提供 reference trajectory。
+- 不提供 TraceSorter 自定义 rubric。
+- 使用 AgentEvals 内置的无参考轨迹 trajectory accuracy prompt。
+- judge 输出 `score` 后映射为 `goodcase` / `badcase`。
+
+示例：
+
+```powershell
+python .\scripts\llm_judge_methods\run_agentevals_default_judge.py .\traces --metadata .\metadata.csv --eval-split test --model openai:gpt-4.1 --output-dir .\results\llm_judge
+```
+
+如果希望让 judge 输出 0 到 1 的连续分数：
+
+```powershell
+python .\scripts\llm_judge_methods\run_agentevals_default_judge.py .\traces --metadata .\metadata.csv --eval-split test --model openai:gpt-4.1 --continuous --good-threshold 0.5
+```
+
+该方法适合作为“外部通用 agent trajectory judge”的基线。由于没有业务 rubric，它不一定贴合本项目 goodcase/badcase 标签。
+
+### Rubric 挖掘与迭代 judge
+
+该方法用于用户不知道业务 rubric 时的场景。流程是：
+
+```text
+带标签 good/bad traces
+-> 差异归纳，挖掘候选 rubric
+-> 将候选 rubric 转成 AgentEvals judge prompt
+-> 在训练集和评估集上跑 LLM-as-Judge
+-> 根据 false positive / false negative 修正 rubric
+-> 重复迭代并输出每轮指标
+```
+
+示例：
+
+```powershell
+python .\scripts\llm_judge_methods\run_rubric_iteration.py .\traces --metadata .\metadata.csv --train-split train --eval-split test --model openai:gpt-4.1 --iterations 3 --output-dir .\results\llm_judge\rubric_iteration
+```
+
+输出包括：
+
+- `rubrics_iter_*.json`：每轮挖掘/修正后的 rubric。
+- `train_predictions_iter_*.jsonl`：每轮训练集 judge 预测。
+- `eval_predictions_iter_*.jsonl`：每轮评估集 judge 预测。
+- Markdown 报告：每轮 accuracy、precision、recall、F1，以及最终 rubric。
+
+该方法与 `llm_labeled` 的区别：
+
+| 方法 | 思想 | 产物 | 执行方式 |
+|---|---|---|---|
+| `llm_labeled` | LLM 生成可执行 JSON 规则 | `scripts/rules/dynamic/llm/*.json` | 统一规则引擎 |
+| `run_rubric_iteration.py` | LLM 从 labeled traces 中归纳/修正自然语言 rubric | `rubrics_iter_*.json` 和 judge 预测 | AgentEvals LLM-as-Judge |
+
+这条路线更适合研究“业务 good/bad 边界到底是什么”，而不是直接追求一组固定可执行规则。
+
 ## Final Answer 识别
 
 `has_final_answer` 不再使用“trace 中存在长度大于等于 80 的字符串”这种宽松兜底。
